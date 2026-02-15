@@ -86,7 +86,7 @@ uvicorn model_router.server:app --host 0.0.0.0 --port 8000
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://your-deployment.vercel.app/v1",
+    base_url="https://model-router-ten.vercel.app/v1",
     api_key="your-chutes-api-key"
 )
 
@@ -102,7 +102,7 @@ response = client.chat.completions.create(
 import anthropic
 
 client = anthropic.Anthropic(
-    base_url="https://your-deployment.vercel.app",
+    base_url="https://model-router-ten.vercel.app",
     api_key="your-chutes-api-key"
 )
 
