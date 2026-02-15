@@ -241,7 +241,7 @@ def _anthropic_to_openai_messages(
             openai_messages.append({"role": msg.role, "content": msg.content})
             continue
 
-        text_parts: list[str] = []
+        content_parts: list[dict[str, Any]] = []
         tool_calls: list[dict] = []
         tool_results: list[dict] = []
 
@@ -258,7 +258,27 @@ def _anthropic_to_openai_messages(
             if block_type == "text":
                 text = block_dict.get("text") or ""
                 if text:
-                    text_parts.append(text)
+                    content_parts.append({"type": "text", "text": text})
+            elif block_type == "image":
+                source = block_dict.get("source") or {}
+                if isinstance(source, dict):
+                    source_type = source.get("type")
+                    if source_type == "base64":
+                        media_type = source.get("media_type") or "image/png"
+                        data = source.get("data")
+                        if isinstance(data, str) and data.strip():
+                            content_parts.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{media_type};base64,{data}"},
+                                }
+                            )
+                    elif source_type in {"url", "image_url"}:
+                        url = source.get("url")
+                        if isinstance(url, str) and url.strip():
+                            content_parts.append(
+                                {"type": "image_url", "image_url": {"url": url.strip()}}
+                            )
             elif block_type == "tool_use" and msg.role == "assistant":
                 tool_id = block_dict.get("id") or f"tool_{uuid.uuid4().hex[:8]}"
                 name = block_dict.get("name") or ""
@@ -282,20 +302,28 @@ def _anthropic_to_openai_messages(
                     }
                 )
 
-        text_content = "\n".join(text_parts).strip()
+        has_image_part = any(part.get("type") == "image_url" for part in content_parts)
+        text_content = "\n".join(
+            [
+                part.get("text", "")
+                for part in content_parts
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+        ).strip()
+        openai_content: Any = content_parts if has_image_part else text_content
 
         if msg.role == "assistant":
-            if text_content or tool_calls:
+            if text_content or has_image_part or tool_calls:
                 openai_message: dict[str, Any] = {
                     "role": "assistant",
-                    "content": text_content,
+                    "content": openai_content,
                 }
                 if tool_calls:
                     openai_message["tool_calls"] = tool_calls
                 openai_messages.append(openai_message)
         else:
-            if text_content:
-                openai_messages.append({"role": msg.role, "content": text_content})
+            if text_content or has_image_part:
+                openai_messages.append({"role": msg.role, "content": openai_content})
             for tool_result in tool_results:
                 if tool_result.get("tool_call_id"):
                     openai_messages.append(
@@ -550,38 +578,54 @@ async def _anthropic_stream_response(
         yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
         yield 'event: message_stop\ndata: {"type": "message_stop"}\n\n'
 
-    async def stream_generator():
-        payload = {
-            "model": model_config.model_id,
-            "messages": openai_messages,
-            "max_tokens": anthropic_request.max_tokens or model_config.max_tokens,
-        }
-        if anthropic_request.temperature is not None:
-            payload["temperature"] = anthropic_request.temperature
-        if anthropic_request.stop_sequences:
-            payload["stop"] = anthropic_request.stop_sequences
-        if openai_tools:
-            payload["tools"] = openai_tools
-        if openai_tool_choice is not None:
-            payload["tool_choice"] = openai_tool_choice
+    payload: dict[str, Any] = {
+        "model": model_config.model_id,
+        "messages": openai_messages,
+        "max_tokens": anthropic_request.max_tokens or model_config.max_tokens,
+    }
+    if anthropic_request.temperature is not None:
+        payload["temperature"] = anthropic_request.temperature
+    if anthropic_request.stop_sequences:
+        payload["stop"] = anthropic_request.stop_sequences
+    if openai_tools:
+        payload["tools"] = openai_tools
+    if openai_tool_choice is not None:
+        payload["tool_choice"] = openai_tool_choice
 
-        if openai_tools or openai_tool_choice is not None:
-            async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
-                response = await client.post(
-                    f"{api_base}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={**payload, "stream": False},
-                )
-                response.raise_for_status()
-                openai_data = response.json()
-            anthropic_message = _openai_to_anthropic_response(openai_data, anthropic_request.model)
+    # If tools are present, we do a non-streaming upstream call and emit a
+    # synthetic Anthropic stream. Run the call before returning so fallbacks
+    # can trigger on failures/empty content.
+    if openai_tools or openai_tool_choice is not None:
+        async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
+            response = await client.post(
+                f"{api_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={**payload, "stream": False},
+            )
+            response.raise_for_status()
+            openai_data = response.json()
+        if _is_empty_chat_completion(openai_data):
+            raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
+        anthropic_message = _openai_to_anthropic_response(openai_data, anthropic_request.model)
+
+        async def stream_generator() -> AsyncIterator[str]:
             async for chunk in stream_from_message(anthropic_message):
                 yield chunk
-            return
 
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Router-Model": model_config.model_id,
+            },
+        )
+
+    async def stream_generator() -> AsyncIterator[str]:
         async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
             async with client.stream(
                 "POST",
@@ -692,6 +736,8 @@ async def _anthropic_non_stream_response(
         )
         response.raise_for_status()
         openai_data = response.json()
+        if _is_empty_chat_completion(openai_data):
+            raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
         return _openai_to_anthropic_response(openai_data, anthropic_request.model)
 
 
@@ -814,6 +860,8 @@ async def _non_stream_response(
         )
         response.raise_for_status()
         data = response.json()
+        if _is_empty_chat_completion(data):
+            raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
         data["model"] = "model-router"
         return data
 
@@ -838,3 +886,23 @@ def _detect_images(messages: list[dict]) -> bool:
                 if isinstance(part, dict) and part.get("type") == "image_url":
                     return True
     return False
+
+
+def _is_empty_chat_completion(openai_response: dict) -> bool:
+    """True if an upstream response has no usable assistant output.
+
+    Some upstream models return `message.content: null` (and no tool calls)
+    in successful responses. Treat this as a failure so we can fall back.
+    """
+
+    choices = openai_response.get("choices") or []
+    if not isinstance(choices, list) or not choices:
+        return True
+    message = (choices[0] or {}).get("message") or {}
+    tool_calls = message.get("tool_calls") or []
+    if tool_calls:
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return not content.strip()
+    return True

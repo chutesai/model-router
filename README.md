@@ -113,6 +113,15 @@ message = client.messages.create(
 )
 ```
 
+## Projects Using This Router
+
+| Project | How It Uses the Router |
+|---------|----------------------|
+| [OpenClaw](../OpenClaw/README.md) | Primary LLM provider (`router/model-router` in OpenClaw config) |
+| [Janus PoC](../janus-poc/README.md) | Both baselines embed a local copy of this router for task-based model selection |
+| [Agent-as-a-Service Web](../agent-as-a-service-web/README.md) | Ops console uses the Vercel deployment for agent sandbox runs |
+| [Sandy](../sandy/README.md) | Ships an embedded copy at `/router` (janus_router); standalone version supersedes it |
+
 ## Architecture
 
 ```
