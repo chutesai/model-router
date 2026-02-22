@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Literal, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .classifier import ClassificationResult, TaskClassifier
@@ -412,6 +412,84 @@ async def startup() -> None:
 async def shutdown() -> None:
     if classifier:
         await classifier.close()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def landing_page() -> str:
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Router</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+.container{max-width:720px;width:100%}
+h1{font-size:2rem;font-weight:600;margin-bottom:.5rem;color:#fff}
+.subtitle{color:#888;font-size:1rem;margin-bottom:2rem}
+.section{background:#111;border:1px solid #222;border-radius:8px;padding:1.5rem;margin-bottom:1rem}
+.section h2{font-size:.85rem;text-transform:uppercase;letter-spacing:.08em;color:#666;margin-bottom:1rem}
+code{background:#1a1a1a;padding:.15em .4em;border-radius:4px;font-size:.9em;color:#a0d0ff}
+pre{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;padding:1rem;overflow-x:auto;font-size:.85rem;line-height:1.5;color:#c0c0c0;margin-top:.75rem}
+pre span.k{color:#7aa2f7}pre span.s{color:#9ece6a}pre span.c{color:#565f89;font-style:italic}
+.endpoint{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.5rem}
+.method{background:#1a2a1a;color:#4ade80;padding:.15em .5em;border-radius:3px;font-size:.8rem;font-weight:600;font-family:monospace}
+.path{font-family:monospace;color:#a0d0ff}
+.desc{color:#888;font-size:.9rem}
+.badge{display:inline-block;background:#1a1a2e;color:#818cf8;padding:.2em .6em;border-radius:4px;font-size:.75rem;font-weight:500;margin-right:.5rem}
+a{color:#818cf8;text-decoration:none}a:hover{text-decoration:underline}
+.footer{text-align:center;color:#444;font-size:.8rem;margin-top:2rem}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Model Router</h1>
+<p class="subtitle">Intelligent LLM request router &mdash; classifies and routes to the optimal model with automatic fallback.</p>
+
+<div class="section">
+<h2>OpenAI-Compatible API</h2>
+<div class="endpoint"><span class="method">POST</span><span class="path">/v1/chat/completions</span></div>
+<p class="desc">Drop-in replacement for the OpenAI Chat Completions API.</p>
+<pre><span class="k">curl</span> https://model-router-ten.vercel.app/v1/chat/completions \\
+  -H <span class="s">"Authorization: Bearer $API_KEY"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
+  -d <span class="s">'{"model":"model-router","messages":[{"role":"user","content":"Hello"}]}'</span></pre>
+</div>
+
+<div class="section">
+<h2>Anthropic Messages API</h2>
+<div class="endpoint"><span class="method">POST</span><span class="path">/v1/messages</span></div>
+<p class="desc">Drop-in replacement for the Anthropic Messages API.</p>
+<pre><span class="k">curl</span> https://model-router-ten.vercel.app/v1/messages \\
+  -H <span class="s">"x-api-key: $API_KEY"</span> \\
+  -H <span class="s">"anthropic-version: 2023-06-01"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
+  -d <span class="s">'{"model":"model-router","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'</span></pre>
+</div>
+
+<div class="section">
+<h2>Other Endpoints</h2>
+<div class="endpoint"><span class="method">GET</span><span class="path">/health</span><span class="desc">&mdash; Health check</span></div>
+<div class="endpoint"><span class="method">GET</span><span class="path">/v1/models</span><span class="desc">&mdash; List models</span></div>
+<div class="endpoint"><span class="method">GET</span><span class="path">/v1/router/metrics</span><span class="desc">&mdash; Routing metrics</span></div>
+</div>
+
+<div class="section">
+<h2>Task Types</h2>
+<span class="badge">Simple Text</span>
+<span class="badge">General</span>
+<span class="badge">Math Reasoning</span>
+<span class="badge">General Reasoning</span>
+<span class="badge">Programming</span>
+<span class="badge">Creative</span>
+<span class="badge">Vision</span>
+</div>
+
+<p class="footer">Powered by <a href="https://chutes.ai">Chutes</a></p>
+</div>
+</body>
+</html>"""
 
 
 @app.get("/health")
