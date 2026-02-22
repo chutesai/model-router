@@ -4,21 +4,32 @@ Intelligent LLM request router that classifies incoming requests and routes them
 
 ## How It Works
 
-1. A lightweight classifier (GLM 4.7 Flash) analyzes incoming requests
-2. Requests are categorized into task types: simple text, general, math/reasoning, programming, creative, vision
+1. A classifier (**Qwen3 Next 80B**, with Nemotron and MiMo V2 Flash TEE fallbacks) analyzes incoming requests
+2. Requests are categorized into task types: simple text, general, math reasoning, general reasoning, programming, creative, vision
 3. Each task type routes to the best-suited model with automatic fallback on failure
-4. Supports both **OpenAI Chat Completions** (`/v1/chat/completions`) and **Anthropic Messages** (`/v1/messages`) API formats
+4. **Self-answer optimization**: For trivially simple questions (greetings, basic facts), the classifier answers directly — saving a round-trip to a second model
+5. **Universal fallback**: Kimi K2.5 serves as the last-resort fallback for all task types
+6. Supports both **OpenAI Chat Completions** (`/v1/chat/completions`) and **Anthropic Messages** (`/v1/messages`) API formats
 
 ## Model Routing Table
 
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
-| Simple Text | MiMo V2 Flash | MiMo V2 Flash (alt) |
-| General | Qwen3 Next 80B | MiMo V2 Flash |
-| Math/Reasoning | DeepSeek V3.2 Speciale | Qwen3 Next 80B |
-| Programming | GLM 5 | MiniMax M2.5, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B |
-| Creative | TNG R1T2 Chimera | Qwen3 Next 80B |
-| Vision | Qwen3 VL 235B | Mistral Small 3.2 |
+| Simple Text | MiMo V2 Flash | Kimi K2.5 |
+| General | Qwen3 Next 80B | Nemotron 3 Nano 30B, MiMo V2 Flash TEE, Kimi K2.5 |
+| Math/Reasoning | DeepSeek V3.2 Speciale | Kimi K2.5 |
+| General Reasoning | Kimi K2.5 | GLM 5, MiniMax M2.5 |
+| Programming | MiniMax M2.5 | GLM 5, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B |
+| Creative | TNG R1T2 Chimera | Kimi K2.5 |
+| Vision | Qwen3.5 397B | Kimi K2.5, Qwen3 VL 235B, Mistral Small 3.2 |
+
+### Classifier Models
+
+| Priority | Model | Role |
+|----------|-------|------|
+| Primary | Qwen3 Next 80B | Task classification + self-answer |
+| Fallback 1 | Nemotron 3 Nano 30B | Classification only |
+| Fallback 2 | MiMo V2 Flash TEE | Classification only |
 
 ## API Endpoints
 
@@ -117,7 +128,7 @@ message = client.messages.create(
 
 | Project | How It Uses the Router |
 |---------|----------------------|
-| [OpenClaw](../OpenClaw/README.md) | Primary LLM provider (`router/model-router` in OpenClaw config) |
+| [OpenClaw](../openclaw-as-a-service/README.md) | Primary LLM provider for inference proxy |
 | [Janus PoC](../janus-poc/README.md) | Both baselines embed a local copy of this router for task-based model selection |
 | [Agent-as-a-Service Web](../agent-as-a-service-web/README.md) | Ops console uses the Vercel deployment for agent sandbox runs |
 | [Sandy](../sandy/README.md) | Ships an embedded copy at `/router` (janus_router); standalone version supersedes it |
@@ -131,21 +142,25 @@ Client Request
     │  or /v1/messages (Anthropic format)
     │
     ▼
-┌─────────────────────┐
-│  Task Classifier     │  GLM 4.7 Flash (fast, <5s)
-│  - Fast-path rules   │  Short messages, code patterns
-│  - LLM fallback      │  Complex classification
-└─────────┬───────────┘
-          │ task_type
-          ▼
-┌─────────────────────┐
-│  Model Selector      │  Pick primary + fallbacks
-└─────────┬───────────┘
+┌─────────────────────────┐
+│  Task Classifier          │  Qwen3 Next 80B (primary)
+│  - Fast-path heuristics   │  → Nemotron 3 Nano 30B (fallback)
+│  - LLM classification     │  → MiMo V2 Flash TEE (fallback)
+│  - Self-answer for simple │  Short factual → answer directly
+└─────────┬───────────────┘
+          │ task_type (+ optional direct_answer)
+          │
+          ├── direct_answer? ──→ Return immediately (no routing)
           │
           ▼
-┌─────────────────────┐
-│  Upstream LLM API    │  llm.chutes.ai/v1
-│  (with fallback      │  Try primary → fallback1 → fallback2
-│   cascade)           │
-└─────────────────────┘
+┌─────────────────────────┐
+│  Model Selector           │  Pick primary + task-aware fallbacks
+│                           │  + Kimi K2.5 universal fallback
+└─────────┬───────────────┘
+          │
+          ▼
+┌─────────────────────────┐
+│  Upstream LLM API         │  llm.chutes.ai/v1
+│  (with fallback cascade)  │  Try primary → fb1 → fb2 → ... → Kimi K2.5
+└─────────────────────────┘
 ```

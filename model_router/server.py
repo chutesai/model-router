@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .classifier import TaskClassifier
+from .classifier import ClassificationResult, TaskClassifier
 from .metrics import metrics
 from .models import ModelConfig, TaskType, get_fallback_models, get_model_for_task
 
@@ -461,14 +461,30 @@ async def anthropic_messages(
     has_images = _detect_images(openai_messages)
 
     if classifier is None:
-        task_type, confidence = TaskType.GENERAL_TEXT, 0.5
+        result = ClassificationResult(TaskType.GENERAL_TEXT, 0.5)
     else:
-        task_type, confidence = await classifier.classify(openai_messages, has_images)
+        result = await classifier.classify(openai_messages, has_images)
 
+    task_type = result.task_type
     classification_time_ms = (time.perf_counter() - start_time) * 1000
 
+    # Self-answer: classifier already provided the answer for simple requests
+    if result.direct_answer:
+        metrics.record_request(
+            task_type=task_type.value,
+            model_id="classifier-self-answer",
+            classification_time_ms=classification_time_ms,
+            used_fallback=False,
+        )
+        anthropic_response = _build_self_answer_anthropic(
+            result.direct_answer, requested_model
+        )
+        if request.stream:
+            return _stream_anthropic_self_answer(anthropic_response)
+        return anthropic_response
+
     primary_model = get_model_for_task(task_type)
-    fallbacks = get_fallback_models(primary_model.model_id)
+    fallbacks = get_fallback_models(primary_model.model_id, task_type)
 
     models_to_try = [primary_model] + fallbacks
     last_error: Exception | None = None
@@ -758,14 +774,28 @@ async def chat_completions(
     has_images = _detect_images(request.messages)
 
     if classifier is None:
-        task_type, confidence = TaskType.GENERAL_TEXT, 0.5
+        result = ClassificationResult(TaskType.GENERAL_TEXT, 0.5)
     else:
-        task_type, confidence = await classifier.classify(request.messages, has_images)
+        result = await classifier.classify(request.messages, has_images)
 
+    task_type = result.task_type
     classification_time_ms = (time.perf_counter() - start_time) * 1000
 
+    # Self-answer: classifier already provided the answer for simple requests
+    if result.direct_answer:
+        metrics.record_request(
+            task_type=task_type.value,
+            model_id="classifier-self-answer",
+            classification_time_ms=classification_time_ms,
+            used_fallback=False,
+        )
+        openai_response = _build_self_answer_openai(result.direct_answer)
+        if request.stream:
+            return _stream_self_answer_openai(openai_response)
+        return openai_response
+
     primary_model = get_model_for_task(task_type)
-    fallbacks = get_fallback_models(primary_model.model_id)
+    fallbacks = get_fallback_models(primary_model.model_id, task_type)
 
     models_to_try = [primary_model] + fallbacks
     last_error: Exception | None = None
@@ -906,3 +936,148 @@ def _is_empty_chat_completion(openai_response: dict) -> bool:
     if isinstance(content, str):
         return not content.strip()
     return True
+
+
+# --- Self-Answer Helpers (classifier answers simple questions directly) ---
+
+
+def _build_self_answer_openai(answer: str) -> dict:
+    """Build an OpenAI-format response from a classifier self-answer."""
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "model-router",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": answer,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
+
+
+def _stream_self_answer_openai(openai_response: dict) -> StreamingResponse:
+    """Stream a self-answer as OpenAI SSE chunks."""
+    answer = openai_response["choices"][0]["message"]["content"]
+    resp_id = openai_response["id"]
+
+    async def generator() -> AsyncIterator[str]:
+        chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "model-router",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": answer},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+        done_chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "model-router",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        yield f"data: {json.dumps(done_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Router-Model": "classifier-self-answer",
+        },
+    )
+
+
+def _build_self_answer_anthropic(answer: str, requested_model: str) -> dict:
+    """Build an Anthropic-format response from a classifier self-answer."""
+    return AnthropicResponse(
+        id=f"msg_{uuid.uuid4().hex[:24]}",
+        type="message",
+        role="assistant",
+        content=[{"type": "text", "text": answer}],
+        model=requested_model,
+        stop_reason="end_turn",
+        stop_sequence=None,
+        usage=AnthropicUsage(input_tokens=0, output_tokens=0),
+    ).model_dump()
+
+
+def _stream_anthropic_self_answer(anthropic_response: dict) -> StreamingResponse:
+    """Stream a self-answer as Anthropic SSE events."""
+    msg_id = anthropic_response.get("id", f"msg_{uuid.uuid4().hex[:24]}")
+    answer = ""
+    for block in anthropic_response.get("content", []):
+        if block.get("type") == "text":
+            answer = block.get("text", "")
+            break
+
+    async def generator() -> AsyncIterator[str]:
+        message_start = {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": anthropic_response.get("model", "model-router"),
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        }
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+
+        content_block_start = {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        }
+        yield f"event: content_block_start\ndata: {json.dumps(content_block_start)}\n\n"
+
+        if answer:
+            content_delta = {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": answer},
+            }
+            yield f"event: content_block_delta\ndata: {json.dumps(content_delta)}\n\n"
+
+        content_block_stop = {"type": "content_block_stop", "index": 0}
+        yield f"event: content_block_stop\ndata: {json.dumps(content_block_stop)}\n\n"
+
+        message_delta = {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 0},
+        }
+        yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
+        yield 'event: message_stop\ndata: {"type": "message_stop"}\n\n'
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Router-Model": "classifier-self-answer",
+        },
+    )

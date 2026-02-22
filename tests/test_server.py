@@ -1,9 +1,11 @@
 import unittest
 
-
+from model_router.models import TaskType, get_fallback_models, get_model_for_task
 from model_router.server import (
     AnthropicMessagesRequest,
     _anthropic_to_openai_messages,
+    _build_self_answer_openai,
+    _build_self_answer_anthropic,
     _detect_images,
     _is_empty_chat_completion,
 )
@@ -107,6 +109,64 @@ class TestEmptyContentFallback(unittest.TestCase):
                 }
             )
         )
+
+
+class TestModelRouting(unittest.TestCase):
+    def test_programming_routes_to_minimax_m25(self) -> None:
+        model = get_model_for_task(TaskType.PROGRAMMING)
+        self.assertEqual(model.model_id, "MiniMaxAI/MiniMax-M2.5-TEE")
+
+    def test_general_reasoning_routes_to_kimi(self) -> None:
+        model = get_model_for_task(TaskType.GENERAL_REASONING)
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.5-TEE")
+
+    def test_vision_routes_to_qwen35(self) -> None:
+        model = get_model_for_task(TaskType.VISION)
+        self.assertEqual(model.model_id, "Qwen/Qwen3.5-397B-A17B-TEE")
+
+    def test_general_routes_to_qwen3_next(self) -> None:
+        model = get_model_for_task(TaskType.GENERAL_TEXT)
+        self.assertEqual(model.model_id, "Qwen/Qwen3-Next-80B-A3B-Instruct")
+
+    def test_programming_fallbacks_are_task_aware(self) -> None:
+        fallbacks = get_fallback_models("MiniMaxAI/MiniMax-M2.5-TEE", TaskType.PROGRAMMING)
+        fallback_ids = [f.model_id for f in fallbacks]
+        # First fallback should be GLM 5 (same task type)
+        self.assertEqual(fallback_ids[0], "zai-org/GLM-5-TEE")
+        # Kimi K2.5 should appear as universal fallback
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+
+    def test_general_reasoning_fallbacks(self) -> None:
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.5-TEE", TaskType.GENERAL_REASONING)
+        fallback_ids = [f.model_id for f in fallbacks]
+        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
+        self.assertIn("MiniMaxAI/MiniMax-M2.5-TEE", fallback_ids)
+
+    def test_vision_fallbacks_include_kimi(self) -> None:
+        fallbacks = get_fallback_models("Qwen/Qwen3.5-397B-A17B-TEE", TaskType.VISION)
+        fallback_ids = [f.model_id for f in fallbacks]
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        self.assertIn("Qwen/Qwen3-VL-235B-A22B-Instruct", fallback_ids)
+
+    def test_universal_kimi_fallback_for_creative(self) -> None:
+        fallbacks = get_fallback_models("tngtech/DeepSeek-TNG-R1T2-Chimera", TaskType.CREATIVE)
+        fallback_ids = [f.model_id for f in fallbacks]
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+
+
+class TestSelfAnswer(unittest.TestCase):
+    def test_openai_self_answer_structure(self) -> None:
+        resp = _build_self_answer_openai("Hello!")
+        self.assertEqual(resp["model"], "model-router")
+        self.assertEqual(resp["choices"][0]["message"]["content"], "Hello!")
+        self.assertEqual(resp["choices"][0]["finish_reason"], "stop")
+
+    def test_anthropic_self_answer_structure(self) -> None:
+        resp = _build_self_answer_anthropic("Hello!", "model-router")
+        self.assertEqual(resp["role"], "assistant")
+        self.assertEqual(resp["content"][0]["type"], "text")
+        self.assertEqual(resp["content"][0]["text"], "Hello!")
+        self.assertEqual(resp["stop_reason"], "end_turn")
 
 
 if __name__ == "__main__":
