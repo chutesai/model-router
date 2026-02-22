@@ -914,6 +914,7 @@ async def _stream_response(
 ) -> StreamingResponse:
 
     async def stream_generator():
+        emitted_router_model = False
         async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
             async with client.stream(
                 "POST",
@@ -936,6 +937,9 @@ async def _stream_response(
                         try:
                             data = json.loads(payload)
                             data["model"] = "model-router"
+                            if not emitted_router_model:
+                                data["x_router_model"] = model_config.model_id
+                                emitted_router_model = True
                             yield f"data: {json.dumps(data)}\n\n"
                         except json.JSONDecodeError:
                             yield f"{line}\n\n"
@@ -970,6 +974,7 @@ async def _non_stream_response(
         data = response.json()
         if _is_empty_chat_completion(data):
             raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
+        data["x_router_model"] = model_config.model_id
         data["model"] = "model-router"
         return data
 
@@ -1026,6 +1031,7 @@ def _build_self_answer_openai(answer: str) -> dict:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": "model-router",
+        "x_router_model": "classifier-self-answer",
         "choices": [
             {
                 "index": 0,
@@ -1055,6 +1061,7 @@ def _stream_self_answer_openai(openai_response: dict) -> StreamingResponse:
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": "model-router",
+            "x_router_model": "classifier-self-answer",
             "choices": [
                 {
                     "index": 0,
