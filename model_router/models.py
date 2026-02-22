@@ -219,7 +219,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         supports_vision=True,
         timeout_seconds=60.0,
     ),
-    # ── Universal Fallback (all non-vision task types) ──────────────────
+    # ── Universal Fallback (ALL task types including vision) ─────────────
     "universal_fallback": ModelConfig(
         model_id="moonshotai/Kimi-K2.5-TEE",
         display_name="Kimi K2.5 (Universal Fallback)",
@@ -230,10 +230,12 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
             TaskType.GENERAL_REASONING,
             TaskType.PROGRAMMING,
             TaskType.CREATIVE,
+            TaskType.VISION,
             TaskType.UNKNOWN,
         ],
         priority=99,
         max_tokens=16384,
+        supports_vision=True,
         timeout_seconds=120.0,
     ),
 }
@@ -273,11 +275,15 @@ def get_fallback_models(
             continue
         if config.model_id == primary_model_id:
             continue
-        # Vision / non-vision separation
+        # Vision primary → only consider vision-capable models
         if primary.supports_vision and not config.supports_vision:
             continue
-        if not primary.supports_vision and config.supports_vision:
-            continue
+        # Non-vision primary → skip vision-ONLY models (but allow universal fallbacks
+        # that support both vision and non-vision task types)
+        if not primary.supports_vision:
+            is_vision_only = all(t == TaskType.VISION for t in config.task_types)
+            if is_vision_only:
+                continue
 
         if task_type and task_type in config.task_types:
             same_task.append(config)

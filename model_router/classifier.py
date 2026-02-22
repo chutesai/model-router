@@ -115,44 +115,10 @@ class TaskClassifier:
             return ClassificationResult(TaskType.VISION, 1.0)
 
         user_content = self._extract_user_content(messages)
-        user_lower = user_content.lower().strip()
-
-        # Fast-path: very short messages
-        if len(user_content) < 30:
-            return ClassificationResult(TaskType.SIMPLE_TEXT, 0.95)
-
-        # Fast-path: obvious programming patterns
-        programming_patterns = (
-            "write a", "create a", "implement", "code", "function",
-            "class ", "def ", "const ", "let ", "var ",
-            "import ", "from ", "require(", "export ",
-            "bash", "shell", "terminal", "command", "run:",
-            "echo ", "curl ", "npm ", "pip ", "git ",
-        )
-        if any(pattern in user_lower for pattern in programming_patterns):
-            return ClassificationResult(TaskType.PROGRAMMING, 0.9)
-
-        # Fast-path: reasoning patterns
-        reasoning_patterns = (
-            "compare", "pros and cons", "analyze", "evaluate",
-            "what would happen", "design a strategy", "plan for",
-            "trade-off", "tradeoff", "should i", "which is better",
-        )
-        if any(pattern in user_lower for pattern in reasoning_patterns):
-            return ClassificationResult(TaskType.GENERAL_REASONING, 0.85)
-
-        # Fast-path: short non-complex messages
-        if len(user_content) < 50 and not any(
-            keyword in user_lower
-            for keyword in (
-                "write", "create", "implement", "code", "function",
-                "class", "prove", "solve", "calculate", "equation",
-                "story", "roleplay", "compare", "analyze", "evaluate",
-            )
-        ):
-            return ClassificationResult(TaskType.SIMPLE_TEXT, 0.8)
 
         # LLM classification with fallback chain
+        # (no fast-path heuristics — the classifier model handles all routing,
+        # and can self-answer simple questions via direct_answer)
         for model_config in self.classifier_models:
             try:
                 response = await self.client.post(

@@ -145,20 +145,14 @@ flowchart TD
 
     E --> F{"Has images?"}
     F -->|Yes| G["vision"]
-    F -->|No| H{"Fast-path<br/>heuristics"}
-
-    H -->|"< 30 chars"| I["simple_text"]
-    H -->|"Code keywords"| J["programming"]
-    H -->|"Reasoning keywords"| K["general_reasoning"]
-    H -->|"< 50 chars, basic"| I
-    H -->|"No match"| L["LLM Classification<br/><i>Qwen3 Next 80B</i><br/>→ Nemotron 30B<br/>→ MiMo V2 Flash TEE"]
+    F -->|No| L["LLM Classification<br/><i>Qwen3 Next 80B</i><br/>→ Nemotron 30B<br/>→ MiMo V2 Flash TEE"]
 
     L --> M{"Task Type"}
-    M --> I
+    M --> I["simple_text"]
     M --> N["general_text"]
     M --> O["math_reasoning"]
-    M --> K
-    M --> J
+    M --> K["general_reasoning"]
+    M --> J["programming"]
     M --> P["creative"]
     M --> G
 
@@ -192,7 +186,7 @@ flowchart TD
 
 ## Decision Graph & Fallback Chains
 
-Each task type has a dedicated primary model and ordered fallback chain. On upstream failure (429/5xx), models are tried left-to-right. **Kimi K2.5** serves as universal last-resort for all non-vision types.
+Each task type has a dedicated primary model and ordered fallback chain. On upstream failure (429/5xx), models are tried left-to-right. **Kimi K2.5** serves as universal last-resort for all task types.
 
 ```mermaid
 flowchart LR
