@@ -117,6 +117,7 @@ class TaskClassifier:
             return ClassificationResult(TaskType.VISION, 1.0)
 
         user_content = self._extract_user_content(messages)
+        has_system_prompt = self._has_nontrivial_system_message(messages)
 
         # LLM classification with fallback chain
         # (no fast-path heuristics — the classifier model handles all routing,
@@ -157,6 +158,10 @@ class TaskClassifier:
                     # Only accept direct_answer for general_text with high confidence
                     if direct_answer and (task_type != TaskType.GENERAL_TEXT or confidence < 0.95):
                         direct_answer = None
+                    # Never self-answer when a system prompt is present — the
+                    # real model must see the system instructions to follow them.
+                    if direct_answer and has_system_prompt:
+                        direct_answer = None
                     # Capture classifier token usage
                     classifier_usage = data.get("usage", {})
                     classifier_prompt_tokens = int(classifier_usage.get("prompt_tokens", 0))
@@ -187,6 +192,31 @@ class TaskClassifier:
                     if isinstance(part, dict) and part.get("type") == "text":
                         parts.append(part.get("text", ""))
         return " ".join(parts)
+
+    @staticmethod
+    def _has_nontrivial_system_message(messages: list[dict]) -> bool:
+        """Check if the messages contain a non-trivial system message.
+
+        When a system prompt is present, self-answering must be suppressed
+        because the real model needs to see and follow the system instructions.
+        A system message shorter than 20 chars (e.g. "You are helpful") is
+        considered trivial and won't block self-answering.
+        """
+        for message in messages:
+            if message.get("role") != "system":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str) and len(content.strip()) >= 20:
+                return True
+            if isinstance(content, list):
+                text = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+                if len(text.strip()) >= 20:
+                    return True
+        return False
 
     async def close(self) -> None:
         await self.client.aclose()
