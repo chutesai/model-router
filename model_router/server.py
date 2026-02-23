@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Literal, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .classifier import ClassificationResult, TaskClassifier
@@ -29,6 +29,17 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Router-Model",
+        "X-Router-Task-Type",
+        "X-Router-Confidence",
+        "X-Router-Classification-Ms",
+        "X-Router-Self-Answered",
+        "X-Router-Classifier-Prompt-Tokens",
+        "X-Router-Classifier-Completion-Tokens",
+        "X-Router-Total-Prompt-Tokens",
+        "X-Router-Total-Completion-Tokens",
+    ],
 )
 
 classifier: Optional[TaskClassifier] = None
@@ -86,6 +97,25 @@ def _require_router_auth(
         raise HTTPException(status_code=401, detail="Missing API key")
     if client_key not in keys:
         raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+def _build_router_headers(
+    model_id: str,
+    result: ClassificationResult,
+    classification_time_ms: float,
+) -> dict[str, str]:
+    """Build the standard set of X-Router-* response headers."""
+    return {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Router-Model": model_id,
+        "X-Router-Task-Type": result.task_type.value,
+        "X-Router-Confidence": f"{result.confidence:.2f}",
+        "X-Router-Classification-Ms": f"{classification_time_ms:.1f}",
+        "X-Router-Self-Answered": "true" if result.direct_answer else "false",
+        "X-Router-Classifier-Prompt-Tokens": str(result.classifier_prompt_tokens),
+        "X-Router-Classifier-Completion-Tokens": str(result.classifier_completion_tokens),
+    }
 
 
 class ChatCompletionRequest(BaseModel):
@@ -554,12 +584,18 @@ async def anthropic_messages(
             classification_time_ms=classification_time_ms,
             used_fallback=False,
         )
+        router_headers = _build_router_headers(
+            "classifier-self-answer", result, classification_time_ms
+        )
         anthropic_response = _build_self_answer_anthropic(
-            result.direct_answer, requested_model
+            result.direct_answer,
+            requested_model,
+            result.classifier_prompt_tokens,
+            result.classifier_completion_tokens,
         )
         if request.stream:
-            return _stream_anthropic_self_answer(anthropic_response)
-        return anthropic_response
+            return _stream_anthropic_self_answer(anthropic_response, router_headers)
+        return JSONResponse(content=anthropic_response, headers=router_headers)
 
     primary_model = get_model_for_task(task_type)
     fallbacks = get_fallback_models(primary_model.model_id, task_type)
@@ -570,13 +606,16 @@ async def anthropic_messages(
     for index, model_config in enumerate(models_to_try):
         used_fallback = index > 0
         try:
+            router_headers = _build_router_headers(
+                model_config.model_id, result, classification_time_ms
+            )
             if request.stream:
                 response = await _anthropic_stream_response(
-                    request, openai_messages, model_config
+                    request, openai_messages, model_config, router_headers, result
                 )
             else:
                 response = await _anthropic_non_stream_response(
-                    request, openai_messages, model_config
+                    request, openai_messages, model_config, router_headers, result
                 )
 
             metrics.record_request(
@@ -605,6 +644,8 @@ async def _anthropic_stream_response(
     anthropic_request: AnthropicMessagesRequest,
     openai_messages: list[dict],
     model_config: ModelConfig,
+    router_headers: dict[str, str],
+    classification_result: ClassificationResult | None = None,
 ) -> StreamingResponse:
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     openai_tools = _anthropic_tools_to_openai(anthropic_request.tools)
@@ -689,6 +730,9 @@ async def _anthropic_stream_response(
     # If tools are present, we do a non-streaming upstream call and emit a
     # synthetic Anthropic stream. Run the call before returning so fallbacks
     # can trigger on failures/empty content.
+    cls_prompt = classification_result.classifier_prompt_tokens if classification_result else 0
+    cls_completion = classification_result.classifier_completion_tokens if classification_result else 0
+
     if openai_tools or openai_tool_choice is not None:
         async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
             response = await client.post(
@@ -703,6 +747,13 @@ async def _anthropic_stream_response(
             openai_data = response.json()
         if _is_empty_chat_completion(openai_data):
             raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
+        # Augment usage with classifier tokens before conversion
+        if openai_data.get("usage") and (cls_prompt or cls_completion):
+            openai_data["usage"]["prompt_tokens"] = openai_data["usage"].get("prompt_tokens", 0) + cls_prompt
+            openai_data["usage"]["completion_tokens"] = openai_data["usage"].get("completion_tokens", 0) + cls_completion
+            openai_data["usage"]["total_tokens"] = (
+                openai_data["usage"]["prompt_tokens"] + openai_data["usage"]["completion_tokens"]
+            )
         anthropic_message = _openai_to_anthropic_response(openai_data, anthropic_request.model)
 
         async def stream_generator() -> AsyncIterator[str]:
@@ -712,11 +763,7 @@ async def _anthropic_stream_response(
         return StreamingResponse(
             stream_generator(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Router-Model": model_config.model_id,
-            },
+            headers=router_headers,
         )
 
     async def stream_generator() -> AsyncIterator[str]:
@@ -789,11 +836,7 @@ async def _anthropic_stream_response(
     return StreamingResponse(
         stream_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Router-Model": model_config.model_id,
-        },
+        headers=router_headers,
     )
 
 
@@ -801,7 +844,12 @@ async def _anthropic_non_stream_response(
     anthropic_request: AnthropicMessagesRequest,
     openai_messages: list[dict],
     model_config: ModelConfig,
-) -> dict:
+    router_headers: dict[str, str],
+    classification_result: ClassificationResult | None = None,
+) -> JSONResponse:
+    cls_prompt = classification_result.classifier_prompt_tokens if classification_result else 0
+    cls_completion = classification_result.classifier_completion_tokens if classification_result else 0
+
     payload = {
         "model": model_config.model_id,
         "messages": openai_messages,
@@ -832,7 +880,17 @@ async def _anthropic_non_stream_response(
         openai_data = response.json()
         if _is_empty_chat_completion(openai_data):
             raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
-        return _openai_to_anthropic_response(openai_data, anthropic_request.model)
+        # Augment usage with classifier tokens
+        if openai_data.get("usage") and (cls_prompt or cls_completion):
+            openai_data["usage"]["prompt_tokens"] = openai_data["usage"].get("prompt_tokens", 0) + cls_prompt
+            openai_data["usage"]["completion_tokens"] = openai_data["usage"].get("completion_tokens", 0) + cls_completion
+            openai_data["usage"]["total_tokens"] = (
+                openai_data["usage"]["prompt_tokens"] + openai_data["usage"]["completion_tokens"]
+            )
+        return JSONResponse(
+            content=_openai_to_anthropic_response(openai_data, anthropic_request.model),
+            headers=router_headers,
+        )
 
 
 # --- OpenAI Chat Completions Endpoint ---
@@ -867,10 +925,17 @@ async def chat_completions(
             classification_time_ms=classification_time_ms,
             used_fallback=False,
         )
-        openai_response = _build_self_answer_openai(result.direct_answer)
+        router_headers = _build_router_headers(
+            "classifier-self-answer", result, classification_time_ms
+        )
+        openai_response = _build_self_answer_openai(
+            result.direct_answer,
+            result.classifier_prompt_tokens,
+            result.classifier_completion_tokens,
+        )
         if request.stream:
-            return _stream_self_answer_openai(openai_response)
-        return openai_response
+            return _stream_self_answer_openai(openai_response, router_headers)
+        return JSONResponse(content=openai_response, headers=router_headers)
 
     primary_model = get_model_for_task(task_type)
     fallbacks = get_fallback_models(primary_model.model_id, task_type)
@@ -881,10 +946,17 @@ async def chat_completions(
     for index, model_config in enumerate(models_to_try):
         used_fallback = index > 0
         try:
+            router_headers = _build_router_headers(
+                model_config.model_id, result, classification_time_ms
+            )
             if request.stream:
-                response = await _stream_response(request, model_config)
+                response = await _stream_response(
+                    request, model_config, router_headers, result
+                )
             else:
-                response = await _non_stream_response(request, model_config)
+                response = await _non_stream_response(
+                    request, model_config, router_headers, result
+                )
 
             metrics.record_request(
                 task_type=task_type.value,
@@ -911,7 +983,11 @@ async def chat_completions(
 async def _stream_response(
     request: ChatCompletionRequest,
     model_config: ModelConfig,
+    router_headers: dict[str, str],
+    classification_result: ClassificationResult | None = None,
 ) -> StreamingResponse:
+    cls_prompt = classification_result.classifier_prompt_tokens if classification_result else 0
+    cls_completion = classification_result.classifier_completion_tokens if classification_result else 0
 
     async def stream_generator():
         emitted_router_model = False
@@ -940,6 +1016,13 @@ async def _stream_response(
                             if not emitted_router_model:
                                 data["x_router_model"] = model_config.model_id
                                 emitted_router_model = True
+                            # Augment usage in final chunk with classifier tokens
+                            if data.get("usage") and (cls_prompt or cls_completion):
+                                data["usage"]["prompt_tokens"] = data["usage"].get("prompt_tokens", 0) + cls_prompt
+                                data["usage"]["completion_tokens"] = data["usage"].get("completion_tokens", 0) + cls_completion
+                                data["usage"]["total_tokens"] = (
+                                    data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
+                                )
                             yield f"data: {json.dumps(data)}\n\n"
                         except json.JSONDecodeError:
                             yield f"{line}\n\n"
@@ -949,18 +1032,19 @@ async def _stream_response(
     return StreamingResponse(
         stream_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Router-Model": model_config.model_id,
-        },
+        headers=router_headers,
     )
 
 
 async def _non_stream_response(
     request: ChatCompletionRequest,
     model_config: ModelConfig,
-) -> dict:
+    router_headers: dict[str, str],
+    classification_result: ClassificationResult | None = None,
+) -> JSONResponse:
+    cls_prompt = classification_result.classifier_prompt_tokens if classification_result else 0
+    cls_completion = classification_result.classifier_completion_tokens if classification_result else 0
+
     async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
         response = await client.post(
             f"{api_base}/chat/completions",
@@ -976,7 +1060,14 @@ async def _non_stream_response(
             raise RuntimeError(f"Upstream returned empty content for model {model_config.model_id}")
         data["x_router_model"] = model_config.model_id
         data["model"] = "model-router"
-        return data
+        # Augment usage with classifier tokens
+        if data.get("usage") and (cls_prompt or cls_completion):
+            data["usage"]["prompt_tokens"] = data["usage"].get("prompt_tokens", 0) + cls_prompt
+            data["usage"]["completion_tokens"] = data["usage"].get("completion_tokens", 0) + cls_completion
+            data["usage"]["total_tokens"] = (
+                data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
+            )
+        return JSONResponse(content=data, headers=router_headers)
 
 
 def _build_payload(
@@ -1024,8 +1115,13 @@ def _is_empty_chat_completion(openai_response: dict) -> bool:
 # --- Self-Answer Helpers (classifier answers simple questions directly) ---
 
 
-def _build_self_answer_openai(answer: str) -> dict:
+def _build_self_answer_openai(
+    answer: str,
+    classifier_prompt_tokens: int = 0,
+    classifier_completion_tokens: int = 0,
+) -> dict:
     """Build an OpenAI-format response from a classifier self-answer."""
+    total_tokens = classifier_prompt_tokens + classifier_completion_tokens
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -1043,14 +1139,17 @@ def _build_self_answer_openai(answer: str) -> dict:
             }
         ],
         "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
+            "prompt_tokens": classifier_prompt_tokens,
+            "completion_tokens": classifier_completion_tokens,
+            "total_tokens": total_tokens,
         },
     }
 
 
-def _stream_self_answer_openai(openai_response: dict) -> StreamingResponse:
+def _stream_self_answer_openai(
+    openai_response: dict,
+    router_headers: dict[str, str],
+) -> StreamingResponse:
     """Stream a self-answer as OpenAI SSE chunks."""
     answer = openai_response["choices"][0]["message"]["content"]
     resp_id = openai_response["id"]
@@ -1084,15 +1183,16 @@ def _stream_self_answer_openai(openai_response: dict) -> StreamingResponse:
     return StreamingResponse(
         generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Router-Model": "classifier-self-answer",
-        },
+        headers=router_headers,
     )
 
 
-def _build_self_answer_anthropic(answer: str, requested_model: str) -> dict:
+def _build_self_answer_anthropic(
+    answer: str,
+    requested_model: str,
+    classifier_prompt_tokens: int = 0,
+    classifier_completion_tokens: int = 0,
+) -> dict:
     """Build an Anthropic-format response from a classifier self-answer."""
     return AnthropicResponse(
         id=f"msg_{uuid.uuid4().hex[:24]}",
@@ -1102,11 +1202,17 @@ def _build_self_answer_anthropic(answer: str, requested_model: str) -> dict:
         model=requested_model,
         stop_reason="end_turn",
         stop_sequence=None,
-        usage=AnthropicUsage(input_tokens=0, output_tokens=0),
+        usage=AnthropicUsage(
+            input_tokens=classifier_prompt_tokens,
+            output_tokens=classifier_completion_tokens,
+        ),
     ).model_dump()
 
 
-def _stream_anthropic_self_answer(anthropic_response: dict) -> StreamingResponse:
+def _stream_anthropic_self_answer(
+    anthropic_response: dict,
+    router_headers: dict[str, str],
+) -> StreamingResponse:
     """Stream a self-answer as Anthropic SSE events."""
     msg_id = anthropic_response.get("id", f"msg_{uuid.uuid4().hex[:24]}")
     answer = ""
@@ -1160,9 +1266,5 @@ def _stream_anthropic_self_answer(anthropic_response: dict) -> StreamingResponse
     return StreamingResponse(
         generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Router-Model": "classifier-self-answer",
-        },
+        headers=router_headers,
     )

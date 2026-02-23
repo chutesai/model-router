@@ -5,7 +5,7 @@ Intelligent LLM request router that classifies incoming requests and routes them
 ## How It Works
 
 1. A classifier (**Qwen3 Next 80B**, with Nemotron and MiMo V2 Flash TEE fallbacks) analyzes incoming requests
-2. Requests are categorized into task types: simple text, general, math reasoning, general reasoning, programming, creative, vision
+2. Requests are categorized into task types: general, math reasoning, general reasoning, programming, creative, vision
 3. Each task type routes to the best-suited model with automatic fallback on failure
 4. **Self-answer optimization**: For trivially simple questions (greetings, basic facts), the classifier answers directly — saving a round-trip to a second model
 5. **Universal fallback**: Kimi K2.5 serves as the last-resort fallback for all task types
@@ -15,9 +15,8 @@ Intelligent LLM request router that classifies incoming requests and routes them
 
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
-| Simple Text | MiMo V2 Flash | Kimi K2.5 |
 | General | Qwen3 Next 80B | Nemotron 3 Nano 30B, MiMo V2 Flash TEE, Kimi K2.5 |
-| Math/Reasoning | DeepSeek V3.2 Speciale | Kimi K2.5 |
+| Math Reasoning | DeepSeek V3.2 Speciale | Kimi K2.5 |
 | General Reasoning | Kimi K2.5 | GLM 5, MiniMax M2.5 |
 | Programming | MiniMax M2.5 | GLM 5, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B |
 | Creative | TNG R1T2 Chimera | Kimi K2.5 |
@@ -148,7 +147,6 @@ flowchart TD
     F -->|No| L["LLM Classification<br/><i>Qwen3 Next 80B</i><br/>→ Nemotron 30B<br/>→ MiMo V2 Flash TEE"]
 
     L --> M{"Task Type"}
-    M --> I["simple_text"]
     M --> N["general_text"]
     M --> O["math_reasoning"]
     M --> K["general_reasoning"]
@@ -156,11 +154,9 @@ flowchart TD
     M --> P["creative"]
     M --> G
 
-    I --> Q{"Self-answer<br/>available?"}
+    N --> Q{"Self-answer<br/>available?"}
     Q -->|"Yes (conf ≥ 0.95)"| R["Return directly<br/><i>No routing needed</i>"]
     Q -->|No| S["Model Selector"]
-
-    N --> S
     O --> S
     K --> S
     J --> S
@@ -190,9 +186,6 @@ Each task type has a dedicated primary model and ordered fallback chain. On upst
 
 ```mermaid
 flowchart LR
-    subgraph simple["Simple Text"]
-        S1["MiMo V2 Flash"] --> S2["Kimi K2.5"]
-    end
     subgraph general["General"]
         G1["Qwen3 Next 80B"] --> G2["Nemotron 30B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.5"]
     end
@@ -212,7 +205,6 @@ flowchart LR
         V1["Qwen3.5 397B"] --> V2["Kimi K2.5"] --> V3["Qwen3 VL 235B"] --> V4["Mistral Small 3.2"]
     end
 
-    style S1 fill:#1a3a1a,stroke:#4a4,color:#fff
     style G1 fill:#1a3a1a,stroke:#4a4,color:#fff
     style M1 fill:#1a3a1a,stroke:#4a4,color:#fff
     style GR1 fill:#1a3a1a,stroke:#4a4,color:#fff

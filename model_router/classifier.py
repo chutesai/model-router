@@ -13,12 +13,11 @@ from .models import MODEL_REGISTRY, TaskType
 CLASSIFICATION_PROMPT = """You are a request classifier and quick-answer assistant. Analyze the user's request and determine the best task type.
 
 Available task types:
-- simple_text: Quick factual questions, greetings, basic Q&A (e.g., "What is 2+2?", "Hello", "What's the capital of France?")
-- general_text: Standard conversations, explanations, summaries (e.g., "Explain quantum computing", "Summarize this article")
+- general_text: General conversations, explanations, summaries, quick factual questions, greetings, basic Q&A, assistant interactions, task instructions (e.g., "What is 2+2?", "Hello", "Explain quantum computing", "Do X for me", "Thanks!")
 - math_reasoning: Complex math, logic puzzles, proofs, multi-step calculations (e.g., "Prove that √2 is irrational", "Solve this differential equation")
 - general_reasoning: Multi-step logical reasoning, analysis, planning, strategy, comparisons, debates (e.g., "Compare the pros and cons of...", "What would happen if...", "Design a strategy for...")
 - programming: Code generation, debugging, code review, technical implementations (e.g., "Write a Python function to...", "Fix this bug", "Implement a REST API")
-- creative: Stories, poems, roleplay, creative writing, fictional scenarios (e.g., "Write a story about...", "Continue this narrative", "Act as a character")
+- creative: Fiction writing, fantasy stories, poems, roleplay of fictional characters, screenplays, worldbuilding (e.g., "Write a fantasy story about dragons", "Continue this novel chapter", "Roleplay as a medieval knight")
 - vision: Requests that reference images or ask about visual content (e.g., "What's in this image?", "Describe this diagram")
 
 Analyze the request and call the classify_task function with your decision.
@@ -28,16 +27,18 @@ IMPORTANT CLASSIFICATION RULES:
 - If the request asks to write code, fix bugs, or implement features → programming
 - If the request involves equations, proofs, or complex calculations → math_reasoning
 - If the request involves multi-step analysis, comparisons, strategy, or logical reasoning → general_reasoning
-- If the request asks for stories, roleplay, or creative content → creative
-- If the request is a simple question with a short factual answer → simple_text
-- Default to general_text for standard conversations
+- If the request asks for fiction stories, poems, or fictional character roleplay → creative
+- Default to general_text for everything else (including simple questions, greetings, and standard conversations)
+
+IMPORTANT: Do NOT classify normal assistant conversations as 'creative'. If the user is talking to an AI assistant about tasks, asking questions, giving instructions, or having a standard conversation, use 'general_text' even if the tone is casual or friendly. 'creative' is ONLY for requests that explicitly ask for fiction, stories, poems, or character roleplay.
 
 SELF-ANSWER OPTIMIZATION:
-For simple_text requests where you are very confident (confidence >= 0.95) and the answer is short and factual, provide the answer directly in the direct_answer field. This saves a round-trip to another model. Examples:
+For general_text requests where you are very confident (confidence >= 0.95) and the answer is trivially simple and factual, provide the answer directly in the direct_answer field. This saves a round-trip to another model. Examples:
 - "What is 2+2?" → direct_answer: "4"
 - "What's the capital of France?" → direct_answer: "The capital of France is Paris."
 - "Hello" → direct_answer: "Hello! How can I help you today?"
-Only use direct_answer for trivially simple, factual, or greeting-type requests. Leave it null for anything that benefits from a more capable model."""
+- "Thanks!" → direct_answer: "You're welcome! Let me know if you need anything else."
+Only use direct_answer for trivially simple, factual, or greeting-type requests. Leave it null for anything that benefits from a more thorough response."""
 
 CLASSIFICATION_TOOLS = [
     {
@@ -51,7 +52,6 @@ CLASSIFICATION_TOOLS = [
                     "task_type": {
                         "type": "string",
                         "enum": [
-                            "simple_text",
                             "general_text",
                             "math_reasoning",
                             "general_reasoning",
@@ -73,7 +73,7 @@ CLASSIFICATION_TOOLS = [
                     },
                     "direct_answer": {
                         "type": "string",
-                        "description": "For simple_text with high confidence: the answer itself. Null/omitted otherwise.",
+                        "description": "For trivially simple general_text with high confidence: the answer itself. Null/omitted otherwise.",
                     },
                 },
                 "required": ["task_type", "confidence"],
@@ -90,6 +90,8 @@ class ClassificationResult:
     task_type: TaskType
     confidence: float
     direct_answer: str | None = None
+    classifier_prompt_tokens: int = 0
+    classifier_completion_tokens: int = 0
 
 
 class TaskClassifier:
@@ -152,10 +154,20 @@ class TaskClassifier:
                     task_type = TaskType(args["task_type"])
                     confidence = float(args.get("confidence", 0.7))
                     direct_answer = args.get("direct_answer")
-                    # Only accept direct_answer for simple_text with high confidence
-                    if direct_answer and (task_type != TaskType.SIMPLE_TEXT or confidence < 0.95):
+                    # Only accept direct_answer for general_text with high confidence
+                    if direct_answer and (task_type != TaskType.GENERAL_TEXT or confidence < 0.95):
                         direct_answer = None
-                    return ClassificationResult(task_type, confidence, direct_answer)
+                    # Capture classifier token usage
+                    classifier_usage = data.get("usage", {})
+                    classifier_prompt_tokens = int(classifier_usage.get("prompt_tokens", 0))
+                    classifier_completion_tokens = int(classifier_usage.get("completion_tokens", 0))
+                    return ClassificationResult(
+                        task_type,
+                        confidence,
+                        direct_answer,
+                        classifier_prompt_tokens,
+                        classifier_completion_tokens,
+                    )
             except Exception:
                 continue
 

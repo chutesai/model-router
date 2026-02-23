@@ -9,7 +9,6 @@ from enum import Enum
 class TaskType(Enum):
     """Task types for routing decisions."""
 
-    SIMPLE_TEXT = "simple_text"
     GENERAL_TEXT = "general_text"
     MATH_REASONING = "math_reasoning"
     GENERAL_REASONING = "general_reasoning"
@@ -40,7 +39,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     "classifier": ModelConfig(
         model_id="Qwen/Qwen3-Next-80B-A3B-Instruct",
         display_name="Qwen3 Next 80B (Classifier)",
-        task_types=[TaskType.SIMPLE_TEXT],
+        task_types=[TaskType.GENERAL_TEXT],
         priority=0,
         max_tokens=2048,
         timeout_seconds=15.0,
@@ -49,7 +48,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     "classifier_fallback": ModelConfig(
         model_id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
         display_name="Nemotron 3 Nano 30B (Classifier Fallback)",
-        task_types=[TaskType.SIMPLE_TEXT],
+        task_types=[TaskType.GENERAL_TEXT],
         priority=0,
         max_tokens=1024,
         timeout_seconds=10.0,
@@ -58,20 +57,11 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     "classifier_fallback2": ModelConfig(
         model_id="XiaomiMiMo/MiMo-V2-Flash-TEE",
         display_name="MiMo V2 Flash TEE (Classifier Fallback)",
-        task_types=[TaskType.SIMPLE_TEXT],
+        task_types=[TaskType.GENERAL_TEXT],
         priority=0,
         max_tokens=1024,
         timeout_seconds=10.0,
         exclude_from_routing=True,
-    ),
-    # ── Simple Text ─────────────────────────────────────────────────────
-    "fast": ModelConfig(
-        model_id="XiaomiMiMo/MiMo-V2-Flash",
-        display_name="MiMo V2 Flash",
-        task_types=[TaskType.SIMPLE_TEXT],
-        priority=1,
-        max_tokens=4096,
-        timeout_seconds=30.0,
     ),
     # ── General Text ────────────────────────────────────────────────────
     "general": ModelConfig(
@@ -224,7 +214,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         model_id="moonshotai/Kimi-K2.5-TEE",
         display_name="Kimi K2.5 (Universal Fallback)",
         task_types=[
-            TaskType.SIMPLE_TEXT,
             TaskType.GENERAL_TEXT,
             TaskType.MATH_REASONING,
             TaskType.GENERAL_REASONING,
