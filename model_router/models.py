@@ -46,8 +46,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         exclude_from_routing=True,
     ),
     "classifier_fallback": ModelConfig(
-        model_id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-        display_name="Nemotron 3 Nano 30B (Classifier Fallback)",
+        model_id="Qwen/Qwen3-32B-TEE",
+        display_name="Qwen3 32B (Classifier Fallback)",
         task_types=[TaskType.GENERAL_TEXT],
         priority=0,
         max_tokens=1024,
@@ -73,8 +73,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         timeout_seconds=60.0,
     ),
     "general_fallback": ModelConfig(
-        model_id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-        display_name="Nemotron 3 Nano 30B",
+        model_id="Qwen/Qwen3-32B-TEE",
+        display_name="Qwen3 32B",
         task_types=[TaskType.GENERAL_TEXT],
         priority=3,
         max_tokens=8192,

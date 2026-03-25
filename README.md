@@ -4,7 +4,7 @@ Intelligent LLM request router that classifies incoming requests and routes them
 
 ## How It Works
 
-1. A classifier (**Qwen3 Next 80B**, with Nemotron and MiMo V2 Flash TEE fallbacks) analyzes incoming requests
+1. A classifier (**Qwen3 Next 80B**, with Qwen3 32B and MiMo V2 Flash TEE fallbacks) analyzes incoming requests
 2. Requests are categorized into task types: general, math reasoning, general reasoning, programming, creative, vision
 3. Each task type routes to the best-suited model with automatic fallback on failure
 4. **Self-answer optimization**: For trivially simple questions (greetings, basic facts), the classifier answers directly — saving a round-trip to a second model
@@ -15,7 +15,7 @@ Intelligent LLM request router that classifies incoming requests and routes them
 
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
-| General | Qwen3 Next 80B | Nemotron 3 Nano 30B, MiMo V2 Flash TEE, Kimi K2.5 |
+| General | Qwen3 Next 80B | Qwen3 32B, MiMo V2 Flash TEE, Kimi K2.5 |
 | Math Reasoning | DeepSeek V3.2 Speciale | Kimi K2.5 |
 | General Reasoning | Kimi K2.5 | GLM 5, MiniMax M2.5 |
 | Programming | MiniMax M2.5 | GLM 5, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B |
@@ -27,7 +27,7 @@ Intelligent LLM request router that classifies incoming requests and routes them
 | Priority | Model | Role |
 |----------|-------|------|
 | Primary | Qwen3 Next 80B | Task classification + self-answer |
-| Fallback 1 | Nemotron 3 Nano 30B | Classification only |
+| Fallback 1 | Qwen3 32B | Classification only |
 | Fallback 2 | MiMo V2 Flash TEE | Classification only |
 
 ## API Endpoints
@@ -144,7 +144,7 @@ flowchart TD
 
     E --> F{"Has images?"}
     F -->|Yes| G["vision"]
-    F -->|No| L["LLM Classification<br/><i>Qwen3 Next 80B</i><br/>→ Nemotron 30B<br/>→ MiMo V2 Flash TEE"]
+    F -->|No| L["LLM Classification<br/><i>Qwen3 Next 80B</i><br/>→ Qwen3 32B<br/>→ MiMo V2 Flash TEE"]
 
     L --> M{"Task Type"}
     M --> N["general_text"]
@@ -187,7 +187,7 @@ Each task type has a dedicated primary model and ordered fallback chain. On upst
 ```mermaid
 flowchart LR
     subgraph general["General"]
-        G1["Qwen3 Next 80B"] --> G2["Nemotron 30B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.5"]
+        G1["Qwen3 Next 80B"] --> G2["Qwen3 32B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.5"]
     end
     subgraph math["Math Reasoning"]
         M1["DeepSeek V3.2 Speciale"] --> M2["Kimi K2.5"]
@@ -213,4 +213,4 @@ flowchart LR
     style V1 fill:#1a3a1a,stroke:#4a4,color:#fff
 ```
 
-**Classifier chain**: Qwen3 Next 80B → Nemotron 3 Nano 30B → MiMo V2 Flash TEE (used for classification only; not part of routing).
+**Classifier chain**: Qwen3 Next 80B → Qwen3 32B → MiMo V2 Flash TEE (used for classification only; not part of routing).

@@ -128,6 +128,12 @@ class TestModelRouting(unittest.TestCase):
         model = get_model_for_task(TaskType.GENERAL_TEXT)
         self.assertEqual(model.model_id, "Qwen/Qwen3-Next-80B-A3B-Instruct")
 
+    def test_general_fallback_prefers_qwen32(self) -> None:
+        fallbacks = get_fallback_models("Qwen/Qwen3-Next-80B-A3B-Instruct", TaskType.GENERAL_TEXT)
+        fallback_ids = [f.model_id for f in fallbacks]
+        self.assertEqual(fallback_ids[0], "Qwen/Qwen3-32B-TEE")
+        self.assertIn("XiaomiMiMo/MiMo-V2-Flash-TEE", fallback_ids)
+
     def test_programming_fallbacks_are_task_aware(self) -> None:
         fallbacks = get_fallback_models("MiniMaxAI/MiniMax-M2.5-TEE", TaskType.PROGRAMMING)
         fallback_ids = [f.model_id for f in fallbacks]
@@ -171,4 +177,3 @@ class TestSelfAnswer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
