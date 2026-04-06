@@ -152,7 +152,6 @@ class TestModelRouting(unittest.TestCase):
         fallbacks = get_fallback_models("Qwen/Qwen3.5-397B-A17B-TEE", TaskType.VISION)
         fallback_ids = [f.model_id for f in fallbacks]
         self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
-        self.assertIn("Qwen/Qwen3-VL-235B-A22B-Instruct", fallback_ids)
 
     def test_universal_kimi_fallback_for_creative(self) -> None:
         fallbacks = get_fallback_models("tngtech/DeepSeek-TNG-R1T2-Chimera", TaskType.CREATIVE)

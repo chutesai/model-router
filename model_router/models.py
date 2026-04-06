@@ -191,24 +191,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         supports_vision=True,
         timeout_seconds=90.0,
     ),
-    "vision_fallback2": ModelConfig(
-        model_id="Qwen/Qwen3-VL-235B-A22B-Instruct",
-        display_name="Qwen3 VL 235B (Vision Fallback)",
-        task_types=[TaskType.VISION],
-        priority=17,
-        max_tokens=8192,
-        supports_vision=True,
-        timeout_seconds=90.0,
-    ),
-    "vision_fallback3": ModelConfig(
-        model_id="chutesai/Mistral-Small-3.2-24B-Instruct-2506",
-        display_name="Mistral Small 3.2 (Vision Fallback)",
-        task_types=[TaskType.VISION],
-        priority=18,
-        max_tokens=8192,
-        supports_vision=True,
-        timeout_seconds=60.0,
-    ),
     # ── Universal Fallback (ALL task types including vision) ─────────────
     "universal_fallback": ModelConfig(
         model_id="moonshotai/Kimi-K2.5-TEE",
