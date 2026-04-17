@@ -6,6 +6,7 @@ from model_router.server import (
     _anthropic_to_openai_messages,
     _build_self_answer_openai,
     _build_self_answer_anthropic,
+    _chunk_has_useful_output,
     _detect_images,
     _is_empty_chat_completion,
 )
@@ -111,6 +112,68 @@ class TestEmptyContentFallback(unittest.TestCase):
         )
 
 
+class TestStreamingEmptyDetection(unittest.TestCase):
+    def test_role_only_chunk_is_not_useful(self) -> None:
+        self.assertFalse(
+            _chunk_has_useful_output(
+                {"choices": [{"delta": {"role": "assistant"}}]}
+            )
+        )
+
+    def test_empty_delta_is_not_useful(self) -> None:
+        self.assertFalse(
+            _chunk_has_useful_output(
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            )
+        )
+
+    def test_content_delta_is_useful(self) -> None:
+        self.assertTrue(
+            _chunk_has_useful_output(
+                {"choices": [{"delta": {"content": "Hello"}}]}
+            )
+        )
+
+    def test_whitespace_only_content_is_not_useful(self) -> None:
+        self.assertFalse(
+            _chunk_has_useful_output(
+                {"choices": [{"delta": {"content": "   "}}]}
+            )
+        )
+
+    def test_tool_call_delta_is_useful(self) -> None:
+        self.assertTrue(
+            _chunk_has_useful_output(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "web_search"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+
+    def test_reasoning_content_is_useful(self) -> None:
+        self.assertTrue(
+            _chunk_has_useful_output(
+                {"choices": [{"delta": {"reasoning_content": "Thinking..."}}]}
+            )
+        )
+
+    def test_missing_choices_is_not_useful(self) -> None:
+        self.assertFalse(_chunk_has_useful_output({}))
+        self.assertFalse(_chunk_has_useful_output({"choices": []}))
+
+
 class TestModelRouting(unittest.TestCase):
     def test_programming_routes_to_minimax_m25(self) -> None:
         model = get_model_for_task(TaskType.PROGRAMMING)
@@ -120,9 +183,9 @@ class TestModelRouting(unittest.TestCase):
         model = get_model_for_task(TaskType.GENERAL_REASONING)
         self.assertEqual(model.model_id, "moonshotai/Kimi-K2.5-TEE")
 
-    def test_vision_routes_to_qwen35(self) -> None:
+    def test_vision_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.VISION)
-        self.assertEqual(model.model_id, "Qwen/Qwen3.5-397B-A17B-TEE")
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.5-TEE")
 
     def test_general_routes_to_qwen3_next(self) -> None:
         model = get_model_for_task(TaskType.GENERAL_TEXT)
@@ -148,10 +211,10 @@ class TestModelRouting(unittest.TestCase):
         self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
         self.assertIn("MiniMaxAI/MiniMax-M2.5-TEE", fallback_ids)
 
-    def test_vision_fallbacks_include_kimi(self) -> None:
-        fallbacks = get_fallback_models("Qwen/Qwen3.5-397B-A17B-TEE", TaskType.VISION)
+    def test_vision_fallbacks_include_qwen35(self) -> None:
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.5-TEE", TaskType.VISION)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        self.assertIn("Qwen/Qwen3.5-397B-A17B-TEE", fallback_ids)
 
     def test_universal_kimi_fallback_for_creative(self) -> None:
         fallbacks = get_fallback_models("tngtech/DeepSeek-TNG-R1T2-Chimera", TaskType.CREATIVE)

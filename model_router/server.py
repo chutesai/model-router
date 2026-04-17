@@ -980,6 +980,33 @@ async def chat_completions(
     raise HTTPException(status_code=503, detail=f"All models failed. Last error: {last_error}")
 
 
+def _chunk_has_useful_output(data: dict) -> bool:
+    """True if a streaming SSE chunk contains assistant content or a tool call.
+
+    We use this to detect upstream models that silently emit only role/empty
+    deltas followed by [DONE]. In that case we want to propagate an error
+    so the outer fallback chain can try the next model instead of serving
+    an empty stream to the client.
+    """
+    choices = data.get("choices") or []
+    if not choices:
+        return False
+    choice = choices[0] or {}
+    delta = choice.get("delta") or {}
+    message = choice.get("message") or {}
+    for source in (delta, message):
+        content = source.get("content")
+        if isinstance(content, str) and content.strip():
+            return True
+        if source.get("tool_calls"):
+            return True
+        # Some upstreams stream reasoning first — count that as non-empty too.
+        reasoning = source.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return True
+    return False
+
+
 async def _stream_response(
     request: ChatCompletionRequest,
     model_config: ModelConfig,
@@ -989,45 +1016,102 @@ async def _stream_response(
     cls_prompt = classification_result.classifier_prompt_tokens if classification_result else 0
     cls_completion = classification_result.classifier_completion_tokens if classification_result else 0
 
+    # Probe the upstream stream BEFORE returning a StreamingResponse, so that
+    # if the upstream model silently emits only [DONE] (empty content + no
+    # tool_calls) we can raise here and let the outer fallback loop retry
+    # with the next candidate. Once we see the first useful chunk we buffer
+    # what we've read so far and hand off to a streaming generator that
+    # continues from where we stopped.
+    client = httpx.AsyncClient(timeout=model_config.timeout_seconds)
+    stream_cm = client.stream(
+        "POST",
+        f"{api_base}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=_build_payload(request, model_config, stream=True),
+    )
+    try:
+        response = await stream_cm.__aenter__()
+        response.raise_for_status()
+    except Exception:
+        await client.aclose()
+        raise
+
+    line_iter = response.aiter_lines()
+    buffered_lines: list[str] = []
+    saw_useful = False
+
+    try:
+        async for line in line_iter:
+            buffered_lines.append(line)
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload.strip() == "[DONE]":
+                break
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if _chunk_has_useful_output(data):
+                saw_useful = True
+                break
+    except Exception:
+        await stream_cm.__aexit__(None, None, None)
+        await client.aclose()
+        raise
+
+    if not saw_useful:
+        await stream_cm.__aexit__(None, None, None)
+        await client.aclose()
+        raise RuntimeError(
+            f"Upstream returned empty stream for model {model_config.model_id}"
+        )
+
     async def stream_generator():
         emitted_router_model = False
-        async with httpx.AsyncClient(timeout=model_config.timeout_seconds) as client:
-            async with client.stream(
-                "POST",
-                f"{api_base}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=_build_payload(request, model_config, stream=True),
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("data: "):
-                        payload = line[6:]
-                        if payload.strip() == "[DONE]":
-                            yield "data: [DONE]\n\n"
-                            continue
-                        try:
-                            data = json.loads(payload)
-                            data["model"] = "model-router"
-                            if not emitted_router_model:
-                                data["x_router_model"] = model_config.model_id
-                                emitted_router_model = True
-                            # Augment usage in final chunk with classifier tokens
-                            if data.get("usage") and (cls_prompt or cls_completion):
-                                data["usage"]["prompt_tokens"] = data["usage"].get("prompt_tokens", 0) + cls_prompt
-                                data["usage"]["completion_tokens"] = data["usage"].get("completion_tokens", 0) + cls_completion
-                                data["usage"]["total_tokens"] = (
-                                    data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
-                                )
-                            yield f"data: {json.dumps(data)}\n\n"
-                        except json.JSONDecodeError:
-                            yield f"{line}\n\n"
-                    else:
-                        yield f"{line}\n\n"
+
+        def _format_sse(line: str) -> str:
+            nonlocal emitted_router_model
+            if not line:
+                return ""
+            if not line.startswith("data: "):
+                return f"{line}\n\n"
+            payload = line[6:]
+            if payload.strip() == "[DONE]":
+                return "data: [DONE]\n\n"
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                return f"{line}\n\n"
+            data["model"] = "model-router"
+            if not emitted_router_model:
+                data["x_router_model"] = model_config.model_id
+                emitted_router_model = True
+            if data.get("usage") and (cls_prompt or cls_completion):
+                data["usage"]["prompt_tokens"] = data["usage"].get("prompt_tokens", 0) + cls_prompt
+                data["usage"]["completion_tokens"] = data["usage"].get("completion_tokens", 0) + cls_completion
+                data["usage"]["total_tokens"] = (
+                    data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
+                )
+            return f"data: {json.dumps(data)}\n\n"
+
+        try:
+            for line in buffered_lines:
+                out = _format_sse(line)
+                if out:
+                    yield out
+            async for line in line_iter:
+                out = _format_sse(line)
+                if out:
+                    yield out
+        finally:
+            try:
+                await stream_cm.__aexit__(None, None, None)
+            finally:
+                await client.aclose()
 
     return StreamingResponse(
         stream_generator(),

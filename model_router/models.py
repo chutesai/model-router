@@ -174,22 +174,22 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     # ── Vision ──────────────────────────────────────────────────────────
     "vision": ModelConfig(
-        model_id="Qwen/Qwen3.5-397B-A17B-TEE",
-        display_name="Qwen3.5 397B",
+        model_id="moonshotai/Kimi-K2.5-TEE",
+        display_name="Kimi K2.5",
         task_types=[TaskType.VISION],
         priority=15,
         max_tokens=8192,
         supports_vision=True,
-        timeout_seconds=120.0,
+        timeout_seconds=90.0,
     ),
     "vision_fallback": ModelConfig(
-        model_id="moonshotai/Kimi-K2.5-TEE",
-        display_name="Kimi K2.5 (Vision Fallback)",
+        model_id="Qwen/Qwen3.5-397B-A17B-TEE",
+        display_name="Qwen3.5 397B (Vision Fallback)",
         task_types=[TaskType.VISION],
         priority=16,
         max_tokens=8192,
         supports_vision=True,
-        timeout_seconds=90.0,
+        timeout_seconds=120.0,
     ),
     # ── Universal Fallback (ALL task types including vision) ─────────────
     "universal_fallback": ModelConfig(
@@ -231,12 +231,17 @@ def get_fallback_models(
     Prioritizes models sharing the same task type, then adds cross-type
     fallbacks. Deduplicates by model_id so each upstream is tried at most once.
     """
-    primary = next(
-        (config for config in MODEL_REGISTRY.values() if config.model_id == primary_model_id),
-        None,
-    )
-    if not primary:
+    matching_configs = [
+        config for config in MODEL_REGISTRY.values() if config.model_id == primary_model_id
+    ]
+    if not matching_configs:
         return [MODEL_REGISTRY["general"]]
+
+    # Vision filter is driven by the *task*, not by the primary. A model can
+    # appear in the registry under multiple keys (e.g. Kimi K2.5 shows up as
+    # both `general_reasoning` and `vision`), so picking vision support from
+    # whichever key sorts first would be fragile.
+    vision_context = task_type == TaskType.VISION
 
     same_task: list[ModelConfig] = []
     other: list[ModelConfig] = []
@@ -246,12 +251,12 @@ def get_fallback_models(
             continue
         if config.model_id == primary_model_id:
             continue
-        # Vision primary → only consider vision-capable models
-        if primary.supports_vision and not config.supports_vision:
+        # Vision task → only consider vision-capable models
+        if vision_context and not config.supports_vision:
             continue
-        # Non-vision primary → skip vision-ONLY models (but allow universal fallbacks
+        # Non-vision task → skip vision-ONLY models (but allow universal fallbacks
         # that support both vision and non-vision task types)
-        if not primary.supports_vision:
+        if not vision_context:
             is_vision_only = all(t == TaskType.VISION for t in config.task_types)
             if is_vision_only:
                 continue
