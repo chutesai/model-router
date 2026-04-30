@@ -15,10 +15,10 @@ Intelligent LLM request router that classifies incoming requests and routes them
 
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
-| General | Qwen3 Next 80B | Qwen3 32B, MiMo V2 Flash TEE, Kimi K2.6, Kimi K2.5 |
+| General | Kimi K2.6 | MiMo V2 Flash TEE, Qwen3 Next 80B, Kimi K2.5 |
 | Math Reasoning | Kimi K2.6 | GLM 5.1, Kimi K2.5 |
 | General Reasoning | Kimi K2.6 | GLM 5.1, MiniMax M2.5, Kimi K2.5 |
-| Programming | MiniMax M2.5 | GLM 5.1, Qwen3 235B, Kimi K2.6, Kimi K2.5 |
+| Programming | GLM 5.1 | Kimi K2.6, MiniMax M2.5, Kimi K2.5 |
 | Creative | Kimi K2.6 | TNG R1T2 Chimera, Kimi K2.5 |
 | Vision | Kimi K2.6 | Qwen3.6 27B, Gemma 4 31B Turbo, Kimi K2.5 |
 
@@ -27,9 +27,9 @@ Intelligent LLM request router that classifies incoming requests and routes them
 | Priority | Model | Role |
 |----------|-------|------|
 | Primary | Qwen3 Next 80B | Task classification + self-answer |
-| Fallback 1 | Qwen3 32B | Classification only |
-| Fallback 2 | MiMo V2 Flash TEE | Classification only |
-| Fallback 3 | Gemma 4 31B Turbo TEE | Classification only |
+| Fallback 1 | Qwen3.6 27B | Classification only |
+| Fallback 2 | Gemma 4 31B Turbo TEE | Classification only |
+| Fallback 3 | MiMo V2 Flash TEE | Classification only |
 
 ## API Endpoints
 
@@ -179,7 +179,7 @@ Each task type has a dedicated primary model and ordered fallback chain. On upst
 ```mermaid
 flowchart LR
     subgraph general["General"]
-        G1["Qwen3 Next 80B"] --> G2["Qwen3 32B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.6"] --> G5["Kimi K2.5"]
+        G1["Kimi K2.6"] --> G2["MiMo V2 Flash TEE"] --> G3["Qwen3 Next 80B"] --> G4["Kimi K2.5"]
     end
     subgraph math["Math Reasoning"]
         M1["Kimi K2.6"] --> M2["GLM 5.1"] --> M3["Kimi K2.5"]
@@ -188,7 +188,7 @@ flowchart LR
         GR1["Kimi K2.6"] --> GR2["GLM 5.1"] --> GR3["MiniMax M2.5"] --> GR4["Kimi K2.5"]
     end
     subgraph prog["Programming"]
-        P1["MiniMax M2.5"] --> P2["GLM 5.1"] --> P3["Qwen3 235B"] --> P4["Kimi K2.6"] --> P5["Kimi K2.5"]
+        P1["GLM 5.1"] --> P2["Kimi K2.6"] --> P3["MiniMax M2.5"] --> P4["Kimi K2.5"]
     end
     subgraph creative["Creative"]
         C1["Kimi K2.6"] --> C2["TNG R1T2 Chimera"] --> C3["Kimi K2.5"]
@@ -205,4 +205,4 @@ flowchart LR
     style V1 fill:#1a3a1a,stroke:#4a4,color:#fff
 ```
 
-**Classifier chain**: Qwen3 Next 80B → Qwen3 32B → MiMo V2 Flash TEE → Gemma 4 31B Turbo TEE (used for classification only; not part of routing).
+**Classifier chain**: Qwen3 Next 80B → Qwen3.6 27B → Gemma 4 31B Turbo TEE → MiMo V2 Flash TEE (used for classification only; not part of routing).

@@ -175,9 +175,9 @@ class TestStreamingEmptyDetection(unittest.TestCase):
 
 
 class TestModelRouting(unittest.TestCase):
-    def test_programming_routes_to_minimax_m25(self) -> None:
+    def test_programming_routes_to_glm51(self) -> None:
         model = get_model_for_task(TaskType.PROGRAMMING)
-        self.assertEqual(model.model_id, "MiniMaxAI/MiniMax-M2.5-TEE")
+        self.assertEqual(model.model_id, "zai-org/GLM-5.1-TEE")
 
     def test_general_reasoning_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.GENERAL_REASONING)
@@ -187,15 +187,19 @@ class TestModelRouting(unittest.TestCase):
         model = get_model_for_task(TaskType.VISION)
         self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
 
-    def test_general_routes_to_qwen3_next(self) -> None:
+    def test_general_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.GENERAL_TEXT)
-        self.assertEqual(model.model_id, "Qwen/Qwen3-Next-80B-A3B-Instruct")
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
 
-    def test_general_fallback_prefers_qwen32(self) -> None:
-        fallbacks = get_fallback_models("Qwen/Qwen3-Next-80B-A3B-Instruct", TaskType.GENERAL_TEXT)
+    def test_general_fallback_chain(self) -> None:
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_TEXT)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertEqual(fallback_ids[0], "Qwen/Qwen3-32B-TEE")
-        self.assertIn("XiaomiMiMo/MiMo-V2-Flash-TEE", fallback_ids)
+        # First fallback should be MiMo (priority 3, same task type)
+        self.assertEqual(fallback_ids[0], "XiaomiMiMo/MiMo-V2-Flash-TEE")
+        # Qwen3 Next 80B kept as a general fallback (no longer the primary)
+        self.assertIn("Qwen/Qwen3-Next-80B-A3B-Instruct", fallback_ids)
+        # Removed: Qwen3 32B no longer in routing
+        self.assertNotIn("Qwen/Qwen3-32B-TEE", fallback_ids)
 
     def test_math_reasoning_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.MATH_REASONING)
@@ -206,15 +210,13 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
 
     def test_programming_fallbacks_are_task_aware(self) -> None:
-        fallbacks = get_fallback_models("MiniMaxAI/MiniMax-M2.5-TEE", TaskType.PROGRAMMING)
+        # Primary is now GLM 5.1; chain order should be K2.6 → M2.5
+        fallbacks = get_fallback_models("zai-org/GLM-5.1-TEE", TaskType.PROGRAMMING)
         fallback_ids = [f.model_id for f in fallbacks]
-        # First fallback should be GLM 5.1 (same task type)
-        self.assertEqual(fallback_ids[0], "zai-org/GLM-5.1-TEE")
-        # Qwen3 235B should remain in the chain
-        self.assertIn("Qwen/Qwen3-235B-A22B-Instruct-2507-TEE", fallback_ids)
-        # Kimi K2.6 should appear as universal fallback
-        self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
+        self.assertEqual(fallback_ids[0], "moonshotai/Kimi-K2.6-TEE")
+        self.assertEqual(fallback_ids[1], "MiniMaxAI/MiniMax-M2.5-TEE")
         # Removed entries should NOT be present
+        self.assertNotIn("Qwen/Qwen3-235B-A22B-Instruct-2507-TEE", fallback_ids)
         self.assertNotIn("zai-org/GLM-5-TEE", fallback_ids)
         self.assertNotIn("MiniMaxAI/MiniMax-M2.1-TEE", fallback_ids)
         self.assertNotIn("deepseek-ai/DeepSeek-V3.2-TEE", fallback_ids)

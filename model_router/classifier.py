@@ -102,10 +102,9 @@ class TaskClassifier:
         self.api_key = api_key
         self.api_base = api_base or os.environ.get("UPSTREAM_API_BASE") or "https://llm.chutes.ai/v1"
         self.classifier_models = [MODEL_REGISTRY["classifier"]]
-        if "classifier_fallback" in MODEL_REGISTRY:
-            self.classifier_models.append(MODEL_REGISTRY["classifier_fallback"])
-        if "classifier_fallback2" in MODEL_REGISTRY:
-            self.classifier_models.append(MODEL_REGISTRY["classifier_fallback2"])
+        for key in ("classifier_fallback", "classifier_fallback2", "classifier_fallback3"):
+            if key in MODEL_REGISTRY:
+                self.classifier_models.append(MODEL_REGISTRY[key])
         self.client = httpx.AsyncClient(timeout=max(m.timeout_seconds for m in self.classifier_models))
 
     async def classify(
