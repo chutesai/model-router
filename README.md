@@ -16,11 +16,11 @@ Intelligent LLM request router that classifies incoming requests and routes them
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
 | General | Qwen3 Next 80B | Qwen3 32B, MiMo V2 Flash TEE, Kimi K2.6, Kimi K2.5 |
-| Math Reasoning | DeepSeek V3.2 Speciale | Kimi K2.6, Kimi K2.5 |
-| General Reasoning | Kimi K2.6 | GLM 5.1, MiniMax M2.5, GLM 5, Kimi K2.5 |
-| Programming | MiniMax M2.5 | GLM 5.1, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B, GLM 5 |
-| Creative | TNG R1T2 Chimera | Kimi K2.6, Kimi K2.5 |
-| Vision | Kimi K2.6 | Qwen3.6 27B, Gemma 4 31B Turbo, Qwen3.5 397B, Kimi K2.5 |
+| Math Reasoning | Kimi K2.6 | GLM 5.1, Kimi K2.5 |
+| General Reasoning | Kimi K2.6 | GLM 5.1, MiniMax M2.5, Kimi K2.5 |
+| Programming | MiniMax M2.5 | GLM 5.1, Qwen3 235B, Kimi K2.6, Kimi K2.5 |
+| Creative | Kimi K2.6 | TNG R1T2 Chimera, Kimi K2.5 |
+| Vision | Kimi K2.6 | Qwen3.6 27B, Gemma 4 31B Turbo, Kimi K2.5 |
 
 ### Classifier Models
 
@@ -182,19 +182,19 @@ flowchart LR
         G1["Qwen3 Next 80B"] --> G2["Qwen3 32B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.6"] --> G5["Kimi K2.5"]
     end
     subgraph math["Math Reasoning"]
-        M1["DeepSeek V3.2 Speciale"] --> M2["Kimi K2.6"] --> M3["Kimi K2.5"]
+        M1["Kimi K2.6"] --> M2["GLM 5.1"] --> M3["Kimi K2.5"]
     end
     subgraph genreason["General Reasoning"]
-        GR1["Kimi K2.6"] --> GR2["GLM 5.1"] --> GR3["MiniMax M2.5"] --> GR4["GLM 5"] --> GR5["Kimi K2.5"]
+        GR1["Kimi K2.6"] --> GR2["GLM 5.1"] --> GR3["MiniMax M2.5"] --> GR4["Kimi K2.5"]
     end
     subgraph prog["Programming"]
-        P1["MiniMax M2.5"] --> P2["GLM 5.1"] --> P3["MiniMax M2.1"] --> P4["DeepSeek V3.2"] --> P5["Qwen3 235B"] --> P6["GLM 5"]
+        P1["MiniMax M2.5"] --> P2["GLM 5.1"] --> P3["Qwen3 235B"] --> P4["Kimi K2.6"] --> P5["Kimi K2.5"]
     end
     subgraph creative["Creative"]
-        C1["TNG R1T2 Chimera"] --> C2["Kimi K2.6"] --> C3["Kimi K2.5"]
+        C1["Kimi K2.6"] --> C2["TNG R1T2 Chimera"] --> C3["Kimi K2.5"]
     end
     subgraph vision["Vision"]
-        V1["Kimi K2.6"] --> V2["Qwen3.6 27B"] --> V3["Gemma 4 31B Turbo"] --> V4["Qwen3.5 397B"] --> V5["Kimi K2.5"]
+        V1["Kimi K2.6"] --> V2["Qwen3.6 27B"] --> V3["Gemma 4 31B Turbo"] --> V4["Kimi K2.5"]
     end
 
     style G1 fill:#1a3a1a,stroke:#4a4,color:#fff

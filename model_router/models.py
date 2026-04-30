@@ -99,8 +99,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     # ── Math Reasoning ──────────────────────────────────────────────────
     "reasoning": ModelConfig(
-        model_id="deepseek-ai/DeepSeek-V3.2-Speciale-TEE",
-        display_name="DeepSeek V3.2 Speciale",
+        model_id="moonshotai/Kimi-K2.6-TEE",
+        display_name="Kimi K2.6 (Math Reasoning)",
         task_types=[TaskType.MATH_REASONING],
         priority=5,
         max_tokens=16384,
@@ -117,8 +117,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     "general_reasoning_fallback": ModelConfig(
         model_id="zai-org/GLM-5.1-TEE",
-        display_name="GLM 5.1 (General Reasoning Fallback)",
-        task_types=[TaskType.GENERAL_REASONING],
+        display_name="GLM 5.1 (Reasoning Fallback)",
+        task_types=[TaskType.GENERAL_REASONING, TaskType.MATH_REASONING],
         priority=7,
         max_tokens=16384,
         timeout_seconds=90.0,
@@ -149,35 +149,27 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         timeout_seconds=90.0,
     ),
     "programming_fallback2": ModelConfig(
-        model_id="MiniMaxAI/MiniMax-M2.1-TEE",
-        display_name="MiniMax M2.1 (Programming Fallback)",
+        model_id="Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
+        display_name="Qwen3 235B (Programming Fallback)",
         task_types=[TaskType.PROGRAMMING],
         priority=11,
         max_tokens=16384,
         timeout_seconds=90.0,
     ),
-    "programming_fallback3": ModelConfig(
-        model_id="deepseek-ai/DeepSeek-V3.2-TEE",
-        display_name="DeepSeek V3.2 (Programming Fallback)",
-        task_types=[TaskType.PROGRAMMING],
-        priority=12,
-        max_tokens=16384,
-        timeout_seconds=90.0,
-    ),
-    "programming_fallback4": ModelConfig(
-        model_id="Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
-        display_name="Qwen3 235B (Programming Fallback)",
-        task_types=[TaskType.PROGRAMMING],
-        priority=13,
-        max_tokens=16384,
-        timeout_seconds=90.0,
-    ),
     # ── Creative ────────────────────────────────────────────────────────
     "creative": ModelConfig(
-        model_id="tngtech/DeepSeek-TNG-R1T2-Chimera",
-        display_name="TNG R1T2 Chimera",
+        model_id="moonshotai/Kimi-K2.6-TEE",
+        display_name="Kimi K2.6 (Creative)",
         task_types=[TaskType.CREATIVE],
         priority=14,
+        max_tokens=16384,
+        timeout_seconds=90.0,
+    ),
+    "creative_fallback": ModelConfig(
+        model_id="tngtech/DeepSeek-TNG-R1T2-Chimera",
+        display_name="TNG R1T2 Chimera (Creative Fallback)",
+        task_types=[TaskType.CREATIVE],
+        priority=50,
         max_tokens=16384,
         timeout_seconds=90.0,
     ),
@@ -207,24 +199,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         priority=17,
         max_tokens=8192,
         supports_vision=True,
-        timeout_seconds=90.0,
-    ),
-    "vision_fallback": ModelConfig(
-        model_id="Qwen/Qwen3.5-397B-A17B-TEE",
-        display_name="Qwen3.5 397B (Vision Fallback)",
-        task_types=[TaskType.VISION],
-        priority=18,
-        max_tokens=8192,
-        supports_vision=True,
-        timeout_seconds=120.0,
-    ),
-    # ── Legacy GLM 5 (end-of-chain fallback for general reasoning + programming) ──
-    "glm5_legacy": ModelConfig(
-        model_id="zai-org/GLM-5-TEE",
-        display_name="GLM 5 (Legacy Fallback)",
-        task_types=[TaskType.GENERAL_REASONING, TaskType.PROGRAMMING],
-        priority=90,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     # ── Universal Fallback (ALL task types including vision) ─────────────
@@ -328,4 +302,4 @@ def get_fallback_models(
             seen.add(config.model_id)
             result.append(config)
 
-    return result[:7]
+    return result[:5]

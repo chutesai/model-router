@@ -197,37 +197,67 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(fallback_ids[0], "Qwen/Qwen3-32B-TEE")
         self.assertIn("XiaomiMiMo/MiMo-V2-Flash-TEE", fallback_ids)
 
+    def test_math_reasoning_routes_to_kimi(self) -> None:
+        model = get_model_for_task(TaskType.MATH_REASONING)
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
+
+    def test_creative_routes_to_kimi(self) -> None:
+        model = get_model_for_task(TaskType.CREATIVE)
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
+
     def test_programming_fallbacks_are_task_aware(self) -> None:
         fallbacks = get_fallback_models("MiniMaxAI/MiniMax-M2.5-TEE", TaskType.PROGRAMMING)
         fallback_ids = [f.model_id for f in fallbacks]
         # First fallback should be GLM 5.1 (same task type)
         self.assertEqual(fallback_ids[0], "zai-org/GLM-5.1-TEE")
-        # Legacy GLM 5 should remain reachable as end-of-chain fallback
-        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
+        # Qwen3 235B should remain in the chain
+        self.assertIn("Qwen/Qwen3-235B-A22B-Instruct-2507-TEE", fallback_ids)
         # Kimi K2.6 should appear as universal fallback
         self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
+        # Removed entries should NOT be present
+        self.assertNotIn("zai-org/GLM-5-TEE", fallback_ids)
+        self.assertNotIn("MiniMaxAI/MiniMax-M2.1-TEE", fallback_ids)
+        self.assertNotIn("deepseek-ai/DeepSeek-V3.2-TEE", fallback_ids)
 
     def test_general_reasoning_fallbacks(self) -> None:
         fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_REASONING)
         fallback_ids = [f.model_id for f in fallbacks]
         self.assertIn("zai-org/GLM-5.1-TEE", fallback_ids)
         self.assertIn("MiniMaxAI/MiniMax-M2.5-TEE", fallback_ids)
-        # Legacy GLM 5 should remain reachable as end-of-chain fallback
-        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
         # Legacy K2.5 should remain reachable as a fallback
         self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        # Removed: GLM 5 legacy
+        self.assertNotIn("zai-org/GLM-5-TEE", fallback_ids)
 
-    def test_vision_fallbacks_include_qwen35(self) -> None:
+    def test_math_reasoning_fallbacks(self) -> None:
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.MATH_REASONING)
+        fallback_ids = [f.model_id for f in fallbacks]
+        # GLM 5.1 should appear ahead of K2.5 legacy
+        self.assertIn("zai-org/GLM-5.1-TEE", fallback_ids)
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        glm_idx = fallback_ids.index("zai-org/GLM-5.1-TEE")
+        k25_idx = fallback_ids.index("moonshotai/Kimi-K2.5-TEE")
+        self.assertLess(glm_idx, k25_idx)
+        # Removed: DeepSeek Speciale should not appear
+        self.assertNotIn("deepseek-ai/DeepSeek-V3.2-Speciale-TEE", fallback_ids)
+
+    def test_vision_fallbacks(self) -> None:
         fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.VISION)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertIn("Qwen/Qwen3.5-397B-A17B-TEE", fallback_ids)
-        # Legacy K2.5 should remain reachable as a vision fallback
+        # New chain: Qwen3.6 → Gemma 4 → K2.5
+        self.assertIn("Qwen/Qwen3.6-27B-TEE", fallback_ids)
+        self.assertIn("google/gemma-4-31B-turbo-TEE", fallback_ids)
         self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        # Dropped: Qwen3.5 397B
+        self.assertNotIn("Qwen/Qwen3.5-397B-A17B-TEE", fallback_ids)
 
-    def test_universal_kimi_fallback_for_creative(self) -> None:
-        fallbacks = get_fallback_models("tngtech/DeepSeek-TNG-R1T2-Chimera", TaskType.CREATIVE)
+    def test_creative_fallbacks(self) -> None:
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.CREATIVE)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
+        # TNG Chimera is now the creative fallback
+        self.assertIn("tngtech/DeepSeek-TNG-R1T2-Chimera", fallback_ids)
+        # K2.5 legacy still reachable
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
 
 
 class TestSelfAnswer(unittest.TestCase):
