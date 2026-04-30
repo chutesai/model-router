@@ -18,19 +18,20 @@ Available task types:
 - general_reasoning: Multi-step logical reasoning, analysis, planning, strategy, comparisons, debates (e.g., "Compare the pros and cons of...", "What would happen if...", "Design a strategy for...")
 - programming: Code generation, debugging, code review, technical implementations (e.g., "Write a Python function to...", "Fix this bug", "Implement a REST API")
 - creative: Fiction writing, fantasy stories, poems, roleplay of fictional characters, screenplays, worldbuilding (e.g., "Write a fantasy story about dragons", "Continue this novel chapter", "Roleplay as a medieval knight")
-- vision: Requests that reference images or ask about visual content (e.g., "What's in this image?", "Describe this diagram")
+- vision: Requests that reference images, ask about visual content, OR ask to create/generate/edit visual output (e.g., "What's in this image?", "Describe this diagram", "Create a cute cat", "Draw a sunset", "Make me a logo", "Now make it red", "Change the background to a beach")
 
 Analyze the request and call the classify_task function with your decision.
 
 IMPORTANT CLASSIFICATION RULES:
 - If the request mentions "image", "picture", "photo", "screenshot", "diagram", or "visual" → vision
+- If the request asks to create, generate, render, draw, paint, illustrate, design, edit, remix, restyle, or recolour something visual (a cat, a logo, a sunset, "this", "it", "that one") → vision. Image-edit follow-ups like "now make it…", "change the background", "color it red", "remove the dog" are ALWAYS vision.
 - If the request asks to write code, fix bugs, or implement features → programming
 - If the request involves equations, proofs, or complex calculations → math_reasoning
 - If the request involves multi-step analysis, comparisons, strategy, or logical reasoning → general_reasoning
 - If the request asks for fiction stories, poems, or fictional character roleplay → creative
 - Default to general_text for everything else (including simple questions, greetings, and standard conversations)
 
-IMPORTANT: Do NOT classify normal assistant conversations as 'creative'. If the user is talking to an AI assistant about tasks, asking questions, giving instructions, or having a standard conversation, use 'general_text' even if the tone is casual or friendly. 'creative' is ONLY for requests that explicitly ask for fiction, stories, poems, or character roleplay.
+IMPORTANT: Do NOT classify normal assistant conversations as 'creative'. If the user is talking to an AI assistant about tasks, asking questions, giving instructions, or having a standard conversation, use 'general_text' even if the tone is casual or friendly. 'creative' is ONLY for requests that explicitly ask for fiction, stories, poems, or character roleplay. Cute/playful single-noun prompts like "create a cute cat" are vision (image generation), not creative writing.
 
 SELF-ANSWER OPTIMIZATION:
 For general_text requests where you are very confident (confidence >= 0.95) and the answer is trivially simple and factual, provide the answer directly in the direct_answer field. This saves a round-trip to another model. Examples:

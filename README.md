@@ -20,7 +20,7 @@ Intelligent LLM request router that classifies incoming requests and routes them
 | General Reasoning | Kimi K2.6 | GLM 5.1, MiniMax M2.5, GLM 5, Kimi K2.5 |
 | Programming | MiniMax M2.5 | GLM 5.1, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B, GLM 5 |
 | Creative | TNG R1T2 Chimera | Kimi K2.6, Kimi K2.5 |
-| Vision | Kimi K2.6 | Qwen3.5 397B, Kimi K2.5 |
+| Vision | Kimi K2.6 | Qwen3.6 27B, Gemma 4 31B Turbo, Qwen3.5 397B, Kimi K2.5 |
 
 ### Classifier Models
 
@@ -194,7 +194,7 @@ flowchart LR
         C1["TNG R1T2 Chimera"] --> C2["Kimi K2.6"] --> C3["Kimi K2.5"]
     end
     subgraph vision["Vision"]
-        V1["Kimi K2.6"] --> V2["Qwen3.5 397B"] --> V3["Kimi K2.5"]
+        V1["Kimi K2.6"] --> V2["Qwen3.6 27B"] --> V3["Gemma 4 31B Turbo"] --> V4["Qwen3.5 397B"] --> V5["Kimi K2.5"]
     end
 
     style G1 fill:#1a3a1a,stroke:#4a4,color:#fff
