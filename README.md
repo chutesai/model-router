@@ -8,19 +8,19 @@ Intelligent LLM request router that classifies incoming requests and routes them
 2. Requests are categorized into task types: general, math reasoning, general reasoning, programming, creative, vision
 3. Each task type routes to the best-suited model with automatic fallback on failure
 4. **Self-answer optimization**: For trivially simple questions (greetings, basic facts), the classifier answers directly — saving a round-trip to a second model
-5. **Universal fallback**: Kimi K2.5 serves as the last-resort fallback for all task types
+5. **Universal fallback**: Kimi K2.6 serves as the last-resort fallback for all task types (with Kimi K2.5 as a secondary legacy fallback)
 6. Supports both **OpenAI Chat Completions** (`/v1/chat/completions`) and **Anthropic Messages** (`/v1/messages`) API formats
 
 ## Model Routing Table
 
 | Task Type | Primary Model | Fallbacks |
 |-----------|---------------|-----------|
-| General | Qwen3 Next 80B | Qwen3 32B, MiMo V2 Flash TEE, Kimi K2.5 |
-| Math Reasoning | DeepSeek V3.2 Speciale | Kimi K2.5 |
-| General Reasoning | Kimi K2.5 | GLM 5, MiniMax M2.5 |
+| General | Qwen3 Next 80B | Qwen3 32B, MiMo V2 Flash TEE, Kimi K2.6, Kimi K2.5 |
+| Math Reasoning | DeepSeek V3.2 Speciale | Kimi K2.6, Kimi K2.5 |
+| General Reasoning | Kimi K2.6 | GLM 5, MiniMax M2.5, Kimi K2.5 |
 | Programming | MiniMax M2.5 | GLM 5, MiniMax M2.1, DeepSeek V3.2, Qwen3 235B |
-| Creative | TNG R1T2 Chimera | Kimi K2.5 |
-| Vision | Qwen3.5 397B | Kimi K2.5, Qwen3 VL 235B, Mistral Small 3.2 |
+| Creative | TNG R1T2 Chimera | Kimi K2.6, Kimi K2.5 |
+| Vision | Kimi K2.6 | Qwen3.5 397B, Kimi K2.5 |
 
 ### Classifier Models
 
@@ -123,15 +123,6 @@ message = client.messages.create(
 )
 ```
 
-## Projects Using This Router
-
-| Project | How It Uses the Router |
-|---------|----------------------|
-| [OpenClaw](../openclaw-as-a-service/README.md) | Primary LLM provider for inference proxy |
-| [Janus PoC](../janus-poc/README.md) | Both baselines embed a local copy of this router for task-based model selection |
-| [Agent-as-a-Service Web](../agent-as-a-service-web/README.md) | Ops console uses the Vercel deployment for agent sandbox runs |
-| [Sandy](../sandy/README.md) | Ships an embedded copy at `/router` (janus_router); standalone version supersedes it |
-
 ## Architecture
 
 ```mermaid
@@ -182,27 +173,27 @@ flowchart TD
 
 ## Decision Graph & Fallback Chains
 
-Each task type has a dedicated primary model and ordered fallback chain. On upstream failure (429/5xx), models are tried left-to-right. **Kimi K2.5** serves as universal last-resort for all task types.
+Each task type has a dedicated primary model and ordered fallback chain. On upstream failure (429/5xx), models are tried left-to-right. **Kimi K2.6** serves as universal last-resort for all task types (with Kimi K2.5 retained as a secondary legacy fallback).
 
 ```mermaid
 flowchart LR
     subgraph general["General"]
-        G1["Qwen3 Next 80B"] --> G2["Qwen3 32B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.5"]
+        G1["Qwen3 Next 80B"] --> G2["Qwen3 32B"] --> G3["MiMo V2 Flash TEE"] --> G4["Kimi K2.6"] --> G5["Kimi K2.5"]
     end
     subgraph math["Math Reasoning"]
-        M1["DeepSeek V3.2 Speciale"] --> M2["Kimi K2.5"]
+        M1["DeepSeek V3.2 Speciale"] --> M2["Kimi K2.6"] --> M3["Kimi K2.5"]
     end
     subgraph genreason["General Reasoning"]
-        GR1["Kimi K2.5"] --> GR2["GLM 5"] --> GR3["MiniMax M2.5"]
+        GR1["Kimi K2.6"] --> GR2["GLM 5"] --> GR3["MiniMax M2.5"] --> GR4["Kimi K2.5"]
     end
     subgraph prog["Programming"]
         P1["MiniMax M2.5"] --> P2["GLM 5"] --> P3["MiniMax M2.1"] --> P4["DeepSeek V3.2"] --> P5["Qwen3 235B"]
     end
     subgraph creative["Creative"]
-        C1["TNG R1T2 Chimera"] --> C2["Kimi K2.5"]
+        C1["TNG R1T2 Chimera"] --> C2["Kimi K2.6"] --> C3["Kimi K2.5"]
     end
     subgraph vision["Vision"]
-        V1["Qwen3.5 397B"] --> V2["Kimi K2.5"] --> V3["Qwen3 VL 235B"] --> V4["Mistral Small 3.2"]
+        V1["Kimi K2.6"] --> V2["Qwen3.5 397B"] --> V3["Kimi K2.5"]
     end
 
     style G1 fill:#1a3a1a,stroke:#4a4,color:#fff

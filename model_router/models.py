@@ -99,8 +99,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     # ── General Reasoning (NEW) ─────────────────────────────────────────
     "general_reasoning": ModelConfig(
-        model_id="moonshotai/Kimi-K2.5-TEE",
-        display_name="Kimi K2.5",
+        model_id="moonshotai/Kimi-K2.6-TEE",
+        display_name="Kimi K2.6",
         task_types=[TaskType.GENERAL_REASONING],
         priority=6,
         max_tokens=16384,
@@ -174,8 +174,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     # ── Vision ──────────────────────────────────────────────────────────
     "vision": ModelConfig(
-        model_id="moonshotai/Kimi-K2.5-TEE",
-        display_name="Kimi K2.5",
+        model_id="moonshotai/Kimi-K2.6-TEE",
+        display_name="Kimi K2.6",
         task_types=[TaskType.VISION],
         priority=15,
         max_tokens=8192,
@@ -193,8 +193,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     ),
     # ── Universal Fallback (ALL task types including vision) ─────────────
     "universal_fallback": ModelConfig(
-        model_id="moonshotai/Kimi-K2.5-TEE",
-        display_name="Kimi K2.5 (Universal Fallback)",
+        model_id="moonshotai/Kimi-K2.6-TEE",
+        display_name="Kimi K2.6 (Universal Fallback)",
         task_types=[
             TaskType.GENERAL_TEXT,
             TaskType.MATH_REASONING,
@@ -205,6 +205,24 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
             TaskType.UNKNOWN,
         ],
         priority=99,
+        max_tokens=16384,
+        supports_vision=True,
+        timeout_seconds=120.0,
+    ),
+    # ── Legacy Kimi K2.5 (secondary universal fallback) ──────────────────
+    "universal_fallback_legacy": ModelConfig(
+        model_id="moonshotai/Kimi-K2.5-TEE",
+        display_name="Kimi K2.5 (Legacy Fallback)",
+        task_types=[
+            TaskType.GENERAL_TEXT,
+            TaskType.MATH_REASONING,
+            TaskType.GENERAL_REASONING,
+            TaskType.PROGRAMMING,
+            TaskType.CREATIVE,
+            TaskType.VISION,
+            TaskType.UNKNOWN,
+        ],
+        priority=100,
         max_tokens=16384,
         supports_vision=True,
         timeout_seconds=120.0,

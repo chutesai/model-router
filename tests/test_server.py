@@ -181,11 +181,11 @@ class TestModelRouting(unittest.TestCase):
 
     def test_general_reasoning_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.GENERAL_REASONING)
-        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.5-TEE")
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
 
     def test_vision_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.VISION)
-        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.5-TEE")
+        self.assertEqual(model.model_id, "moonshotai/Kimi-K2.6-TEE")
 
     def test_general_routes_to_qwen3_next(self) -> None:
         model = get_model_for_task(TaskType.GENERAL_TEXT)
@@ -202,24 +202,28 @@ class TestModelRouting(unittest.TestCase):
         fallback_ids = [f.model_id for f in fallbacks]
         # First fallback should be GLM 5 (same task type)
         self.assertEqual(fallback_ids[0], "zai-org/GLM-5-TEE")
-        # Kimi K2.5 should appear as universal fallback
-        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        # Kimi K2.6 should appear as universal fallback
+        self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
 
     def test_general_reasoning_fallbacks(self) -> None:
-        fallbacks = get_fallback_models("moonshotai/Kimi-K2.5-TEE", TaskType.GENERAL_REASONING)
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_REASONING)
         fallback_ids = [f.model_id for f in fallbacks]
         self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
         self.assertIn("MiniMaxAI/MiniMax-M2.5-TEE", fallback_ids)
+        # Legacy K2.5 should remain reachable as a fallback
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
 
     def test_vision_fallbacks_include_qwen35(self) -> None:
-        fallbacks = get_fallback_models("moonshotai/Kimi-K2.5-TEE", TaskType.VISION)
+        fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.VISION)
         fallback_ids = [f.model_id for f in fallbacks]
         self.assertIn("Qwen/Qwen3.5-397B-A17B-TEE", fallback_ids)
+        # Legacy K2.5 should remain reachable as a vision fallback
+        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
 
     def test_universal_kimi_fallback_for_creative(self) -> None:
         fallbacks = get_fallback_models("tngtech/DeepSeek-TNG-R1T2-Chimera", TaskType.CREATIVE)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
+        self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
 
 
 class TestSelfAnswer(unittest.TestCase):
