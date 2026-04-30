@@ -63,6 +63,15 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         timeout_seconds=10.0,
         exclude_from_routing=True,
     ),
+    "classifier_fallback3": ModelConfig(
+        model_id="google/gemma-4-31B-turbo-TEE",
+        display_name="Gemma 4 31B Turbo TEE (Classifier Fallback)",
+        task_types=[TaskType.GENERAL_TEXT],
+        priority=0,
+        max_tokens=1024,
+        timeout_seconds=10.0,
+        exclude_from_routing=True,
+    ),
     # ── General Text ────────────────────────────────────────────────────
     "general": ModelConfig(
         model_id="Qwen/Qwen3-Next-80B-A3B-Instruct",
@@ -107,8 +116,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         timeout_seconds=120.0,
     ),
     "general_reasoning_fallback": ModelConfig(
-        model_id="zai-org/GLM-5-TEE",
-        display_name="GLM 5 (General Reasoning Fallback)",
+        model_id="zai-org/GLM-5.1-TEE",
+        display_name="GLM 5.1 (General Reasoning Fallback)",
         task_types=[TaskType.GENERAL_REASONING],
         priority=7,
         max_tokens=16384,
@@ -132,8 +141,8 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         timeout_seconds=90.0,
     ),
     "programming_fallback": ModelConfig(
-        model_id="zai-org/GLM-5-TEE",
-        display_name="GLM 5 (Programming Fallback)",
+        model_id="zai-org/GLM-5.1-TEE",
+        display_name="GLM 5.1 (Programming Fallback)",
         task_types=[TaskType.PROGRAMMING],
         priority=10,
         max_tokens=16384,
@@ -190,6 +199,15 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         max_tokens=8192,
         supports_vision=True,
         timeout_seconds=120.0,
+    ),
+    # ── Legacy GLM 5 (end-of-chain fallback for general reasoning + programming) ──
+    "glm5_legacy": ModelConfig(
+        model_id="zai-org/GLM-5-TEE",
+        display_name="GLM 5 (Legacy Fallback)",
+        task_types=[TaskType.GENERAL_REASONING, TaskType.PROGRAMMING],
+        priority=90,
+        max_tokens=16384,
+        timeout_seconds=90.0,
     ),
     # ── Universal Fallback (ALL task types including vision) ─────────────
     "universal_fallback": ModelConfig(
@@ -292,4 +310,4 @@ def get_fallback_models(
             seen.add(config.model_id)
             result.append(config)
 
-    return result[:5]
+    return result[:7]

@@ -200,16 +200,20 @@ class TestModelRouting(unittest.TestCase):
     def test_programming_fallbacks_are_task_aware(self) -> None:
         fallbacks = get_fallback_models("MiniMaxAI/MiniMax-M2.5-TEE", TaskType.PROGRAMMING)
         fallback_ids = [f.model_id for f in fallbacks]
-        # First fallback should be GLM 5 (same task type)
-        self.assertEqual(fallback_ids[0], "zai-org/GLM-5-TEE")
+        # First fallback should be GLM 5.1 (same task type)
+        self.assertEqual(fallback_ids[0], "zai-org/GLM-5.1-TEE")
+        # Legacy GLM 5 should remain reachable as end-of-chain fallback
+        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
         # Kimi K2.6 should appear as universal fallback
         self.assertIn("moonshotai/Kimi-K2.6-TEE", fallback_ids)
 
     def test_general_reasoning_fallbacks(self) -> None:
         fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_REASONING)
         fallback_ids = [f.model_id for f in fallbacks]
-        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
+        self.assertIn("zai-org/GLM-5.1-TEE", fallback_ids)
         self.assertIn("MiniMaxAI/MiniMax-M2.5-TEE", fallback_ids)
+        # Legacy GLM 5 should remain reachable as end-of-chain fallback
+        self.assertIn("zai-org/GLM-5-TEE", fallback_ids)
         # Legacy K2.5 should remain reachable as a fallback
         self.assertIn("moonshotai/Kimi-K2.5-TEE", fallback_ids)
 
