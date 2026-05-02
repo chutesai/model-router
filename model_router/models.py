@@ -6,6 +6,18 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+# Default max_tokens for chat-completion entries when the inbound request
+# doesn't set one. Chosen to sit just under the smallest output limit among
+# the chat-tier models we route to (Kimi K2.5/K2.6 = 65535, gemma-4 = 65536,
+# DeepSeek/Qwen/GLM/MiniMax/MiMo = 65536+). Reasoning models (K2.6, R1, etc.)
+# spend a chunk of the token budget on `reasoning_content` BEFORE producing
+# `content` — a tight cap of 4-16k starves the visible answer and the
+# response shape (content=null + finish_reason=length) can be misread by the
+# non-streaming empty-detection path. Models with higher caps clamp this
+# value server-side. See README.md "max_tokens & capacity" for context.
+DEFAULT_CHAT_MAX_TOKENS = 65_535
+
+
 class TaskType(Enum):
     """Task types for routing decisions."""
 
@@ -26,7 +38,7 @@ class ModelConfig:
     display_name: str
     task_types: list[TaskType]
     priority: int
-    max_tokens: int = 8192
+    max_tokens: int = DEFAULT_CHAT_MAX_TOKENS
     supports_streaming: bool = True
     supports_tools: bool = True
     supports_vision: bool = False
@@ -73,12 +85,15 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         exclude_from_routing=True,
     ),
     # ── General Text ────────────────────────────────────────────────────
+    # All chat-tier entries below default to DEFAULT_CHAT_MAX_TOKENS so the
+    # token budget never artificially clips an answer. Reasoning models
+    # consume a chunk of this budget on `reasoning_content` before any
+    # `content` is produced — see README.md "max_tokens & capacity".
     "general": ModelConfig(
         model_id="moonshotai/Kimi-K2.6-TEE",
         display_name="Kimi K2.6 (General)",
         task_types=[TaskType.GENERAL_TEXT, TaskType.UNKNOWN],
         priority=2,
-        max_tokens=8192,
         timeout_seconds=60.0,
     ),
     "general_fallback": ModelConfig(
@@ -86,7 +101,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="MiMo V2 Flash TEE",
         task_types=[TaskType.GENERAL_TEXT],
         priority=3,
-        max_tokens=4096,
         timeout_seconds=30.0,
     ),
     "general_fallback2": ModelConfig(
@@ -94,7 +108,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Qwen3 Next 80B (General Fallback)",
         task_types=[TaskType.GENERAL_TEXT],
         priority=4,
-        max_tokens=8192,
         timeout_seconds=60.0,
     ),
     # ── Math Reasoning ──────────────────────────────────────────────────
@@ -103,7 +116,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Kimi K2.6 (Math Reasoning)",
         task_types=[TaskType.MATH_REASONING],
         priority=5,
-        max_tokens=16384,
         timeout_seconds=120.0,
     ),
     # ── General Reasoning (NEW) ─────────────────────────────────────────
@@ -112,7 +124,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Kimi K2.6",
         task_types=[TaskType.GENERAL_REASONING],
         priority=6,
-        max_tokens=16384,
         timeout_seconds=120.0,
     ),
     "general_reasoning_fallback": ModelConfig(
@@ -120,7 +131,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="GLM 5.1 (Reasoning Fallback)",
         task_types=[TaskType.GENERAL_REASONING, TaskType.MATH_REASONING],
         priority=7,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     "general_reasoning_fallback2": ModelConfig(
@@ -128,7 +138,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="MiniMax M2.5 (General Reasoning Fallback)",
         task_types=[TaskType.GENERAL_REASONING],
         priority=8,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     # ── Programming ─────────────────────────────────────────────────────
@@ -137,7 +146,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="GLM 5.1 (Programming)",
         task_types=[TaskType.PROGRAMMING],
         priority=9,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     "programming_fallback": ModelConfig(
@@ -145,7 +153,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Kimi K2.6 (Programming Fallback)",
         task_types=[TaskType.PROGRAMMING],
         priority=10,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     "programming_fallback2": ModelConfig(
@@ -153,7 +160,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="MiniMax M2.5 (Programming Fallback)",
         task_types=[TaskType.PROGRAMMING],
         priority=11,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     # ── Creative ────────────────────────────────────────────────────────
@@ -162,7 +168,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Kimi K2.6 (Creative)",
         task_types=[TaskType.CREATIVE],
         priority=14,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     "creative_fallback": ModelConfig(
@@ -170,7 +175,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="TNG R1T2 Chimera (Creative Fallback)",
         task_types=[TaskType.CREATIVE],
         priority=50,
-        max_tokens=16384,
         timeout_seconds=90.0,
     ),
     # ── Vision ──────────────────────────────────────────────────────────
@@ -179,7 +183,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Kimi K2.6",
         task_types=[TaskType.VISION],
         priority=15,
-        max_tokens=8192,
         supports_vision=True,
         timeout_seconds=90.0,
     ),
@@ -188,7 +191,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Qwen3.6 27B (Vision Fallback)",
         task_types=[TaskType.VISION],
         priority=16,
-        max_tokens=8192,
         supports_vision=True,
         timeout_seconds=90.0,
     ),
@@ -197,7 +199,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         display_name="Gemma 4 31B Turbo TEE (Vision Fallback)",
         task_types=[TaskType.VISION],
         priority=17,
-        max_tokens=8192,
         supports_vision=True,
         timeout_seconds=90.0,
     ),
@@ -215,7 +216,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
             TaskType.UNKNOWN,
         ],
         priority=99,
-        max_tokens=16384,
         supports_vision=True,
         timeout_seconds=120.0,
     ),
@@ -233,7 +233,6 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
             TaskType.UNKNOWN,
         ],
         priority=100,
-        max_tokens=16384,
         supports_vision=True,
         timeout_seconds=120.0,
     ),

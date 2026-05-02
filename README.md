@@ -206,3 +206,36 @@ flowchart LR
 ```
 
 **Classifier chain**: Qwen3 Next 80B → Qwen3.6 27B → Gemma 4 31B Turbo TEE → MiMo V2 Flash TEE (used for classification only; not part of routing).
+
+## max_tokens & capacity
+
+### Why we send a generous `max_tokens`
+
+All chat-tier `ModelConfig` entries default to `DEFAULT_CHAT_MAX_TOKENS = 65_535`, which sits just under the smallest output limit among the models we route to. The router uses this as a backstop only — `request.max_tokens` from the caller wins when present (callers like `chutes-frontend` set `65_535` explicitly).
+
+This matters because our primary models — **Kimi K2.6**, **DeepSeek R1**, **Qwen3-235B-Thinking**, and others — are reasoning models. Their response stream looks like:
+
+```
+delta.reasoning_content: " The user wants ..."   ← consumed first, off-screen
+delta.reasoning_content: " So the answer is ..."
+delta.content: "The square root of 144 is 12."   ← only what the user sees
+```
+
+The reasoning portion still spends tokens against the budget. With a tight cap (the historic 4-8k defaults) a reasoning model can burn the entire budget on `reasoning_content` before any `content` is produced — the upstream then returns `content: null` with `finish_reason: "length"`. That shape is indistinguishable from "model produced nothing", which the non-streaming empty-detection path treats as a failure and falls through to the next candidate. The result: K2.6 looks broken even though it was just thinking.
+
+A 65k cap gives reasoning models comfortable headroom and isn't a hard ceiling on cost — most assistant turns finish well below it (`finish_reason: "stop"` long before token exhaustion). Models with output limits *below* 65k clamp the value server-side and respond normally; verified against `Kimi-K2.6-TEE` and `gemma-4-31B-turbo-TEE` at `max_tokens=200_000` (both returned 200 / `finish_reason: stop`).
+
+### What "empty response" means by case
+
+| `content` | `tool_calls` | `finish_reason` | router's verdict |
+|-----------|--------------|-----------------|------------------|
+| `null` | populated | (any) | **Not empty** — model chose to call a tool. Pass through. |
+| `null` | `[]` | `length` | Empty *for this budget*. Falling back is reasonable; the next model may fit a complete answer. |
+| `null` | `[]` | `stop` | Genuinely empty. Falling back is correct. |
+| non-empty | (any) | (any) | Not empty. Pass through. |
+
+The streaming path (`_chunk_has_useful_output`) already counts `reasoning_content` as a useful chunk, so reasoning streams aren't classified as empty mid-flight. The non-streaming path doesn't have the same shortcut and relies on the final `content` field — bumping `max_tokens` is the cheapest way to make that path happy with reasoning models too.
+
+### Capacity-driven fallback is intentional
+
+When K2.6 is at upstream capacity (429 / "infrastructure at maximum capacity" / 5xx), the router demotes the request to the next model in the task chain rather than serving the user a 503. This is a feature, not a bug: an answer from MiMo V2 Flash or Qwen3-Next is strictly better than no answer. The frontend's response header (`X-Router-Model`) reports whichever model actually produced the answer so callers can persist the truth. If you see disproportionate non-K2.6 usage in the DB, the upstream chute health is the most likely cause — check `/v1/router/metrics`'s `errors_by_model` and `requests_by_model` for the smoking gun.
