@@ -146,7 +146,7 @@ def _build_router_failure_payload(
     }
 
 
-def _record_attempt(
+async def _record_attempt(
     *,
     attempts: list[dict[str, Any]],
     model_id: str,
@@ -159,11 +159,21 @@ def _record_attempt(
     (truncated to keep the 503 body bounded). For everything else we record
     the exception class name so we can tell network/timeout/classifier-shape
     failures apart from "model said 429".
+
+    The streaming code paths use `async with client.stream(...)` which raises
+    HTTPStatusError before the body is read — `exc.response.text` then raises
+    `ResponseNotRead` and we silently lost the upstream message. After the
+    chutes-frontend started persisting this trace into messages.metadata,
+    `body_snippet: null` made every saturation event harder to investigate
+    (Alex 2026-05-05 hammer-test trace had every chute returning 429 with
+    the body field empty). Calling `aread()` here makes the body available
+    regardless of which path raised the error.
     """
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     if isinstance(exc, httpx.HTTPStatusError):
         body_snippet: str | None = None
         try:
+            await exc.response.aread()
             body_snippet = exc.response.text[:300]
         except Exception:  # pragma: no cover - defensive
             body_snippet = None
@@ -751,7 +761,7 @@ async def anthropic_messages(
         except httpx.HTTPStatusError as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
-            _record_attempt(
+            await _record_attempt(
                 attempts=attempts,
                 model_id=model_config.model_id,
                 started_at=attempt_started_at,
@@ -764,7 +774,7 @@ async def anthropic_messages(
         except Exception as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
-            _record_attempt(
+            await _record_attempt(
                 attempts=attempts,
                 model_id=model_config.model_id,
                 started_at=attempt_started_at,
@@ -1116,7 +1126,7 @@ async def chat_completions(
         except httpx.HTTPStatusError as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
-            _record_attempt(
+            await _record_attempt(
                 attempts=attempts,
                 model_id=model_config.model_id,
                 started_at=attempt_started_at,
@@ -1129,7 +1139,7 @@ async def chat_completions(
         except Exception as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
-            _record_attempt(
+            await _record_attempt(
                 attempts=attempts,
                 model_id=model_config.model_id,
                 started_at=attempt_started_at,

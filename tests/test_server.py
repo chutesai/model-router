@@ -352,24 +352,27 @@ class TestRouterFailurePayload(unittest.TestCase):
         self.assertEqual(rf["attempts"][0]["status"], 429)
 
 
-class TestRecordAttempt(unittest.TestCase):
+class TestRecordAttempt(unittest.IsolatedAsyncioTestCase):
     """Per-attempt records feed _build_router_failure_payload — make sure both
     HTTPStatusError (the upstream-429 path that hit Algowary) and generic
     Exception (network/classifier-shape failures) are captured fully."""
 
-    def test_records_http_status_error_with_status_and_body_snippet(self) -> None:
+    async def test_records_http_status_error_with_status_and_body_snippet(self) -> None:
+        # httpx.HTTPStatusError requires `request` and `response` args. The
+        # helper now calls `await response.aread()` before reading text so the
+        # streaming-call path captures the body too — exercise that path with
+        # an AsyncMock for aread().
         response = MagicMock()
         response.status_code = 429
         response.text = '{"detail":"Infrastructure is at maximum capacity, try again later"}'
-        # httpx.HTTPStatusError requires `request` and `response` args. We
-        # pass the bare minimum — the helper only reads response.status_code
-        # and response.text.
+        from unittest.mock import AsyncMock
+        response.aread = AsyncMock(return_value=b'')
         request = MagicMock()
         exc = httpx.HTTPStatusError("429 from upstream", request=request, response=response)
 
         attempts: list[dict] = []
         started_at = time.perf_counter() - 0.42
-        _record_attempt(
+        await _record_attempt(
             attempts=attempts,
             model_id="moonshotai/Kimi-K2.6-TEE",
             started_at=started_at,
@@ -384,10 +387,12 @@ class TestRecordAttempt(unittest.TestCase):
         self.assertIn("Infrastructure is at maximum capacity", rec["body_snippet"])
         # Elapsed should be >= 400ms because we anchored started_at to t-0.42s.
         self.assertGreaterEqual(rec["elapsed_ms"], 400)
+        # aread() must have been called — that's the whole point of the fix.
+        response.aread.assert_awaited_once()
 
-    def test_records_generic_exception_with_class_name(self) -> None:
+    async def test_records_generic_exception_with_class_name(self) -> None:
         attempts: list[dict] = []
-        _record_attempt(
+        await _record_attempt(
             attempts=attempts,
             model_id="zai-org/GLM-5.1-TEE",
             started_at=time.perf_counter(),
