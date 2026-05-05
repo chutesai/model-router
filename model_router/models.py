@@ -153,6 +153,35 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         priority=13,
         timeout_seconds=60.0,
     ),
+    # 2026-05-05: Discord saturation events keep happening. Extending the
+    # general_text chain with three more cross-pool fallbacks so we stop
+    # bottoming out on K2.5 → DeepSeek-TNG-R1T2-Chimera and instead have
+    # specifically-tool-capable, fast, well-tested chutes available.
+    # Priorities 14/15/16 (free slots — see comment on general_fallback above).
+    "general_fallback_qwen3_32b": ModelConfig(
+        model_id="Qwen/Qwen3-32B-TEE",
+        display_name="Qwen3 32B (General Fallback)",
+        task_types=[TaskType.GENERAL_TEXT],
+        priority=14,
+        timeout_seconds=60.0,
+    ),
+    "general_fallback_gemma": ModelConfig(
+        model_id="google/gemma-4-31B-turbo-TEE",
+        display_name="Gemma 4 31B Turbo (General Fallback)",
+        task_types=[TaskType.GENERAL_TEXT],
+        priority=15,
+        timeout_seconds=30.0,
+    ),
+    "general_fallback_glm_46v": ModelConfig(
+        model_id="zai-org/GLM-4.6V",
+        display_name="GLM 4.6V (General Fallback)",
+        task_types=[TaskType.GENERAL_TEXT],
+        priority=16,
+        # 4.6V supports vision too — registered as a general_text option
+        # since vision-routing has its own dedicated chain entries.
+        supports_vision=True,
+        timeout_seconds=60.0,
+    ),
     # ── Math Reasoning ──────────────────────────────────────────────────
     "reasoning": ModelConfig(
         model_id="moonshotai/Kimi-K2.6-TEE",
@@ -344,7 +373,14 @@ def get_fallback_models(
             seen.add(config.model_id)
             result.append(config)
 
-    return result[:5]
+    # Cap chain length so a saturation event doesn't take forever to
+    # surface as 503 — but high enough that we exhaust real options
+    # first. Bumped from 5 → 8 on 2026-05-05 after adding three more
+    # general_text fallbacks (Qwen3-32B, gemma-4-31B-turbo, GLM-4.6V).
+    # With per-model timeouts of 30-120s and the bulk of the chain being
+    # 30-60s entries, an exhausted-chain 503 still arrives well under
+    # 10 minutes even in the worst case.
+    return result[:8]
 
 
 def get_general_text_chain() -> list[ModelConfig]:
@@ -357,7 +393,8 @@ def get_general_text_chain() -> list[ModelConfig]:
 
     Returns primary first, then same-task fallbacks, then cross-task
     fallbacks. Already deduped by model_id by `get_fallback_models`. The
-    result is bounded (currently ≤ 6 models) and cheap to recompute.
+    result is bounded (currently ≤ 9 models = primary + up to 8
+    fallbacks) and cheap to recompute.
     """
     primary = get_model_for_task(TaskType.GENERAL_TEXT)
     fallbacks = get_fallback_models(primary.model_id, TaskType.GENERAL_TEXT)

@@ -209,16 +209,18 @@ class TestModelRouting(unittest.TestCase):
     def test_general_fallback_chain(self) -> None:
         fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_TEXT)
         fallback_ids = [f.model_id for f in fallbacks]
-        # 2026-05-05: Qwen3.6 27B was inserted at priority 3 so it sits one
-        # rung below K2.6 in the general_text chain — it uses a different
-        # upstream chute pool than Moonshot/MiMo, so we have a non-correlated
-        # next-hop during wide-saturation events (Algowary 2026-05-04).
+        # 2026-05-05: Qwen3.6 27B inserted at priority 3 sits right below
+        # K2.6. It uses a different upstream chute pool than Moonshot/MiMo,
+        # so we have a non-correlated next-hop during a Kimi-pool capacity
+        # event (Algowary 2026-05-04).
         self.assertEqual(fallback_ids[0], "Qwen/Qwen3.6-27B-TEE")
-        # MiMo and Qwen3 Next 80B are now positions 1 and 2 (priorities 12/13).
+        # MiMo and Qwen3 Next 80B are positions 1 and 2 (priorities 12/13).
         self.assertEqual(fallback_ids[1], "XiaomiMiMo/MiMo-V2-Flash-TEE")
         self.assertEqual(fallback_ids[2], "Qwen/Qwen3-Next-80B-A3B-Instruct")
-        # Removed: Qwen3 32B no longer in routing
-        self.assertNotIn("Qwen/Qwen3-32B-TEE", fallback_ids)
+        # 2026-05-05 capacity-event additions land at positions 3/4/5.
+        self.assertEqual(fallback_ids[3], "Qwen/Qwen3-32B-TEE")
+        self.assertEqual(fallback_ids[4], "google/gemma-4-31B-turbo-TEE")
+        self.assertEqual(fallback_ids[5], "zai-org/GLM-4.6V")
 
     def test_math_reasoning_routes_to_kimi(self) -> None:
         model = get_model_for_task(TaskType.MATH_REASONING)
@@ -454,12 +456,25 @@ class TestGeneralTextChain(unittest.TestCase):
         # us a non-correlated next-hop during a Kimi-pool capacity event.
         self.assertEqual(ids[1], "Qwen/Qwen3.6-27B-TEE")
 
+    def test_chain_includes_2026_05_05_capacity_event_additions(self) -> None:
+        """We added Qwen3-32B-TEE, gemma-4-31B-turbo-TEE, and GLM-4.6V to
+        the general_text chain on 2026-05-05 in response to recurring 429
+        events. Pin their presence so a future registry edit can't quietly
+        drop them and reintroduce the saturation cliff."""
+        chain_ids = [c.model_id for c in get_general_text_chain()]
+        for added in (
+            "Qwen/Qwen3-32B-TEE",
+            "google/gemma-4-31B-turbo-TEE",
+            "zai-org/GLM-4.6V",
+        ):
+            self.assertIn(added, chain_ids, f"{added} missing from general_text chain")
+
     def test_chain_is_deduped_and_bounded(self) -> None:
         chain = get_general_text_chain()
         ids = [c.model_id for c in chain]
         self.assertEqual(len(ids), len(set(ids)), "chain has duplicate model_ids")
-        # 5-element fallback cap from get_fallback_models + primary = 6 max.
-        self.assertLessEqual(len(chain), 6)
+        # 8-element fallback cap from get_fallback_models + primary = 9 max.
+        self.assertLessEqual(len(chain), 9)
 
     def test_every_model_in_chain_supports_tools(self) -> None:
         # set_chat_title is a tool call — a non-tool model would always
