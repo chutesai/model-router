@@ -96,18 +96,36 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
         priority=2,
         timeout_seconds=60.0,
     ),
+    # Qwen 3.6 27B sits one rung below K2.6 in the general_text chain. It's
+    # already proven in the vision_fallback path, supports tools, has solid
+    # instruction-following, and crucially uses *different* upstream chute
+    # capacity than the Moonshot/Kimi pool — so when the wide-saturation
+    # event Algowary hit on 2026-05-04 happens (every K2.6/K2.5/MiMo upstream
+    # 429s simultaneously) we have a non-correlated next-hop instead of
+    # walking the rest of the chain looking for a free slot.
+    "general_fallback_qwen36": ModelConfig(
+        model_id="Qwen/Qwen3.6-27B-TEE",
+        display_name="Qwen3.6 27B (General Fallback)",
+        task_types=[TaskType.GENERAL_TEXT],
+        priority=3,
+        timeout_seconds=60.0,
+    ),
+    # Priorities of the two pre-existing general fallbacks were bumped from
+    # 3/4 → 12/13 to keep relative order while inserting Qwen3.6 ahead of
+    # them. 12/13 are unused slots; nothing else depends on these specific
+    # numbers, only on relative ordering inside the same task_types tier.
     "general_fallback": ModelConfig(
         model_id="XiaomiMiMo/MiMo-V2-Flash-TEE",
         display_name="MiMo V2 Flash TEE",
         task_types=[TaskType.GENERAL_TEXT],
-        priority=3,
+        priority=12,
         timeout_seconds=30.0,
     ),
     "general_fallback2": ModelConfig(
         model_id="Qwen/Qwen3-Next-80B-A3B-Instruct",
         display_name="Qwen3 Next 80B (General Fallback)",
         task_types=[TaskType.GENERAL_TEXT],
-        priority=4,
+        priority=13,
         timeout_seconds=60.0,
     ),
     # ── Math Reasoning ──────────────────────────────────────────────────

@@ -99,6 +99,89 @@ def _require_router_auth(
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
+def _build_router_failure_payload(
+    *,
+    task_type: TaskType,
+    classification_time_ms: float,
+    classifier_confidence: float | None,
+    classifier_self_answered: bool,
+    primary_model_id: str,
+    attempts: list[dict[str, Any]],
+    last_error: Exception | None,
+) -> dict[str, Any]:
+    """Build the rich 503 body returned when every model in the chain fails.
+
+    Keeps a top-level `detail` string starting with "All models failed." so
+    callers using the historic shape (and the chutes-frontend's substring
+    check that decides to stop double-trying Kimi K2.6) keep working. The
+    new `router_failure` sibling carries everything ops needs to investigate
+    a saturation event after the fact: which models we tried, what each
+    upstream returned, how long each took, and the classifier's verdict.
+    See chat-frontend `/api/chat` for how the chat row stores this.
+    """
+    return {
+        "detail": (
+            f"All models failed. Last error: {last_error}"
+            if last_error is not None
+            else "All models failed."
+        ),
+        "router_failure": {
+            "task_type": task_type.value,
+            "classification_ms": round(classification_time_ms, 1),
+            "classifier_confidence": (
+                round(classifier_confidence, 2)
+                if classifier_confidence is not None
+                else None
+            ),
+            "classifier_self_answered": classifier_self_answered,
+            "primary_model": primary_model_id,
+            "attempts": attempts,
+        },
+    }
+
+
+def _record_attempt(
+    *,
+    attempts: list[dict[str, Any]],
+    model_id: str,
+    started_at: float,
+    exc: BaseException,
+) -> None:
+    """Append a single fallback-loop attempt to the trace.
+
+    For HTTPStatusError we capture the upstream status + a short body snippet
+    (truncated to keep the 503 body bounded). For everything else we record
+    the exception class name so we can tell network/timeout/classifier-shape
+    failures apart from "model said 429".
+    """
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    if isinstance(exc, httpx.HTTPStatusError):
+        body_snippet: str | None = None
+        try:
+            body_snippet = exc.response.text[:300]
+        except Exception:  # pragma: no cover - defensive
+            body_snippet = None
+        attempts.append(
+            {
+                "model_id": model_id,
+                "status": exc.response.status_code,
+                "elapsed_ms": elapsed_ms,
+                "error_class": type(exc).__name__,
+                "body_snippet": body_snippet,
+            }
+        )
+    else:
+        attempts.append(
+            {
+                "model_id": model_id,
+                "status": None,
+                "elapsed_ms": elapsed_ms,
+                "error_class": type(exc).__name__,
+                "body_snippet": str(exc)[:300] or None,
+            }
+        )
+
+
 def _build_router_headers(
     model_id: str,
     result: ClassificationResult,
@@ -602,9 +685,11 @@ async def anthropic_messages(
 
     models_to_try = [primary_model] + fallbacks
     last_error: Exception | None = None
+    attempts: list[dict[str, Any]] = []
 
     for index, model_config in enumerate(models_to_try):
         used_fallback = index > 0
+        attempt_started_at = time.perf_counter()
         try:
             router_headers = _build_router_headers(
                 model_config.model_id, result, classification_time_ms
@@ -628,6 +713,12 @@ async def anthropic_messages(
         except httpx.HTTPStatusError as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
+            _record_attempt(
+                attempts=attempts,
+                model_id=model_config.model_id,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             status = exc.response.status_code
             if status == 429 or status >= 500:
                 continue
@@ -635,9 +726,26 @@ async def anthropic_messages(
         except Exception as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
+            _record_attempt(
+                attempts=attempts,
+                model_id=model_config.model_id,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             continue
 
-    raise HTTPException(status_code=503, detail=f"All models failed. Last error: {last_error}")
+    return JSONResponse(
+        status_code=503,
+        content=_build_router_failure_payload(
+            task_type=task_type,
+            classification_time_ms=classification_time_ms,
+            classifier_confidence=getattr(result, "confidence", None),
+            classifier_self_answered=bool(getattr(result, "direct_answer", None)),
+            primary_model_id=primary_model.model_id,
+            attempts=attempts,
+            last_error=last_error,
+        ),
+    )
 
 
 async def _anthropic_stream_response(
@@ -942,9 +1050,11 @@ async def chat_completions(
 
     models_to_try = [primary_model] + fallbacks
     last_error: Exception | None = None
+    attempts: list[dict[str, Any]] = []
 
     for index, model_config in enumerate(models_to_try):
         used_fallback = index > 0
+        attempt_started_at = time.perf_counter()
         try:
             router_headers = _build_router_headers(
                 model_config.model_id, result, classification_time_ms
@@ -968,6 +1078,12 @@ async def chat_completions(
         except httpx.HTTPStatusError as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
+            _record_attempt(
+                attempts=attempts,
+                model_id=model_config.model_id,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             status = exc.response.status_code
             if status == 429 or status >= 500:
                 continue
@@ -975,9 +1091,26 @@ async def chat_completions(
         except Exception as exc:
             last_error = exc
             metrics.record_error(model_config.model_id)
+            _record_attempt(
+                attempts=attempts,
+                model_id=model_config.model_id,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             continue
 
-    raise HTTPException(status_code=503, detail=f"All models failed. Last error: {last_error}")
+    return JSONResponse(
+        status_code=503,
+        content=_build_router_failure_payload(
+            task_type=task_type,
+            classification_time_ms=classification_time_ms,
+            classifier_confidence=getattr(result, "confidence", None),
+            classifier_self_answered=bool(getattr(result, "direct_answer", None)),
+            primary_model_id=primary_model.model_id,
+            attempts=attempts,
+            last_error=last_error,
+        ),
+    )
 
 
 def _chunk_has_useful_output(data: dict) -> bool:

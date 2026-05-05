@@ -1,14 +1,20 @@
+import time
 import unittest
+from unittest.mock import MagicMock
+
+import httpx
 
 from model_router.models import TaskType, get_fallback_models, get_model_for_task
 from model_router.server import (
     AnthropicMessagesRequest,
     _anthropic_to_openai_messages,
+    _build_router_failure_payload,
     _build_self_answer_openai,
     _build_self_answer_anthropic,
     _chunk_has_useful_output,
     _detect_images,
     _is_empty_chat_completion,
+    _record_attempt,
 )
 
 
@@ -194,10 +200,14 @@ class TestModelRouting(unittest.TestCase):
     def test_general_fallback_chain(self) -> None:
         fallbacks = get_fallback_models("moonshotai/Kimi-K2.6-TEE", TaskType.GENERAL_TEXT)
         fallback_ids = [f.model_id for f in fallbacks]
-        # First fallback should be MiMo (priority 3, same task type)
-        self.assertEqual(fallback_ids[0], "XiaomiMiMo/MiMo-V2-Flash-TEE")
-        # Qwen3 Next 80B kept as a general fallback (no longer the primary)
-        self.assertIn("Qwen/Qwen3-Next-80B-A3B-Instruct", fallback_ids)
+        # 2026-05-05: Qwen3.6 27B was inserted at priority 3 so it sits one
+        # rung below K2.6 in the general_text chain — it uses a different
+        # upstream chute pool than Moonshot/MiMo, so we have a non-correlated
+        # next-hop during wide-saturation events (Algowary 2026-05-04).
+        self.assertEqual(fallback_ids[0], "Qwen/Qwen3.6-27B-TEE")
+        # MiMo and Qwen3 Next 80B are now positions 1 and 2 (priorities 12/13).
+        self.assertEqual(fallback_ids[1], "XiaomiMiMo/MiMo-V2-Flash-TEE")
+        self.assertEqual(fallback_ids[2], "Qwen/Qwen3-Next-80B-A3B-Instruct")
         # Removed: Qwen3 32B no longer in routing
         self.assertNotIn("Qwen/Qwen3-32B-TEE", fallback_ids)
 
@@ -275,6 +285,109 @@ class TestSelfAnswer(unittest.TestCase):
         self.assertEqual(resp["content"][0]["type"], "text")
         self.assertEqual(resp["content"][0]["text"], "Hello!")
         self.assertEqual(resp["stop_reason"], "end_turn")
+
+
+class TestRouterFailurePayload(unittest.TestCase):
+    """Algowary 2026-05-04: when every model in the chain 429'd we returned
+    a bare `{"detail": "All models failed. Last error: ..."}` and ops had no
+    way to tell which models were tried, what they returned, or how long the
+    classifier took. The enriched payload now carries that detail so each
+    saturation event leaves a forensic trace in the chat DB."""
+
+    def test_payload_keeps_legacy_detail_string_with_all_models_marker(self) -> None:
+        """The chutes-frontend uses `peeked.includes('All models failed')` to
+        decide NOT to redundantly retry Kimi K2.6. That substring MUST stay
+        in the top-level `detail` string regardless of how the payload
+        evolves — otherwise we silently re-introduce the cascading retry."""
+        payload = _build_router_failure_payload(
+            task_type=TaskType.GENERAL_TEXT,
+            classification_time_ms=2347.0,
+            classifier_confidence=0.85,
+            classifier_self_answered=False,
+            primary_model_id="moonshotai/Kimi-K2.6-TEE",
+            attempts=[],
+            last_error=RuntimeError("upstream 429"),
+        )
+        self.assertIn("All models failed", payload["detail"])
+        self.assertIn("upstream 429", payload["detail"])
+
+    def test_payload_carries_router_failure_diagnostics(self) -> None:
+        attempts = [
+            {
+                "model_id": "moonshotai/Kimi-K2.6-TEE",
+                "status": 429,
+                "elapsed_ms": 312,
+                "error_class": "HTTPStatusError",
+                "body_snippet": '{"detail":"Infrastructure is at maximum capacity"}',
+            }
+        ]
+        payload = _build_router_failure_payload(
+            task_type=TaskType.GENERAL_TEXT,
+            classification_time_ms=2347.0,
+            classifier_confidence=0.85,
+            classifier_self_answered=False,
+            primary_model_id="moonshotai/Kimi-K2.6-TEE",
+            attempts=attempts,
+            last_error=RuntimeError("upstream 429"),
+        )
+        rf = payload["router_failure"]
+        self.assertEqual(rf["task_type"], "general_text")
+        self.assertEqual(rf["classification_ms"], 2347.0)
+        self.assertEqual(rf["classifier_confidence"], 0.85)
+        self.assertFalse(rf["classifier_self_answered"])
+        self.assertEqual(rf["primary_model"], "moonshotai/Kimi-K2.6-TEE")
+        self.assertEqual(len(rf["attempts"]), 1)
+        self.assertEqual(rf["attempts"][0]["model_id"], "moonshotai/Kimi-K2.6-TEE")
+        self.assertEqual(rf["attempts"][0]["status"], 429)
+
+
+class TestRecordAttempt(unittest.TestCase):
+    """Per-attempt records feed _build_router_failure_payload — make sure both
+    HTTPStatusError (the upstream-429 path that hit Algowary) and generic
+    Exception (network/classifier-shape failures) are captured fully."""
+
+    def test_records_http_status_error_with_status_and_body_snippet(self) -> None:
+        response = MagicMock()
+        response.status_code = 429
+        response.text = '{"detail":"Infrastructure is at maximum capacity, try again later"}'
+        # httpx.HTTPStatusError requires `request` and `response` args. We
+        # pass the bare minimum — the helper only reads response.status_code
+        # and response.text.
+        request = MagicMock()
+        exc = httpx.HTTPStatusError("429 from upstream", request=request, response=response)
+
+        attempts: list[dict] = []
+        started_at = time.perf_counter() - 0.42
+        _record_attempt(
+            attempts=attempts,
+            model_id="moonshotai/Kimi-K2.6-TEE",
+            started_at=started_at,
+            exc=exc,
+        )
+
+        self.assertEqual(len(attempts), 1)
+        rec = attempts[0]
+        self.assertEqual(rec["model_id"], "moonshotai/Kimi-K2.6-TEE")
+        self.assertEqual(rec["status"], 429)
+        self.assertEqual(rec["error_class"], "HTTPStatusError")
+        self.assertIn("Infrastructure is at maximum capacity", rec["body_snippet"])
+        # Elapsed should be >= 400ms because we anchored started_at to t-0.42s.
+        self.assertGreaterEqual(rec["elapsed_ms"], 400)
+
+    def test_records_generic_exception_with_class_name(self) -> None:
+        attempts: list[dict] = []
+        _record_attempt(
+            attempts=attempts,
+            model_id="zai-org/GLM-5.1-TEE",
+            started_at=time.perf_counter(),
+            exc=TimeoutError("classifier timed out"),
+        )
+        self.assertEqual(len(attempts), 1)
+        rec = attempts[0]
+        self.assertEqual(rec["model_id"], "zai-org/GLM-5.1-TEE")
+        self.assertIsNone(rec["status"])
+        self.assertEqual(rec["error_class"], "TimeoutError")
+        self.assertIn("classifier timed out", rec["body_snippet"])
 
 
 if __name__ == "__main__":
