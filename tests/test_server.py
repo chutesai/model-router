@@ -3,8 +3,16 @@ import unittest
 from unittest.mock import MagicMock
 
 import httpx
+from fastapi.testclient import TestClient
 
-from model_router.models import TaskType, get_fallback_models, get_model_for_task
+from model_router.models import (
+    MODEL_REGISTRY,
+    TaskType,
+    derive_chute_slug,
+    get_fallback_models,
+    get_general_text_chain,
+    get_model_for_task,
+)
 from model_router.server import (
     AnthropicMessagesRequest,
     _anthropic_to_openai_messages,
@@ -15,6 +23,7 @@ from model_router.server import (
     _detect_images,
     _is_empty_chat_completion,
     _record_attempt,
+    app,
 )
 
 
@@ -388,6 +397,113 @@ class TestRecordAttempt(unittest.TestCase):
         self.assertIsNone(rec["status"])
         self.assertEqual(rec["error_class"], "TimeoutError")
         self.assertIn("classifier timed out", rec["body_snippet"])
+
+
+class TestSlugDerivation(unittest.TestCase):
+    """Slugs are how the chutes-frontend addresses each chute directly,
+    bypassing the model-router classifier hop for short tool-call tasks
+    (e.g. chat-title generation). Pin the derivation so a future model_id
+    can't silently produce a non-resolving hostname. Each known slug below
+    was verified to resolve (HTTP 401, "auth required") on 2026-05-05."""
+
+    def test_slug_for_known_models_matches_production_chutes(self) -> None:
+        cases = {
+            "moonshotai/Kimi-K2.6-TEE": "chutes-moonshotai-kimi-k2-6-tee",
+            "moonshotai/Kimi-K2.5-TEE": "chutes-moonshotai-kimi-k2-5-tee",
+            "Qwen/Qwen3.6-27B-TEE": "chutes-qwen-qwen3-6-27b-tee",
+            "XiaomiMiMo/MiMo-V2-Flash-TEE": "chutes-xiaomimimo-mimo-v2-flash-tee",
+            "Qwen/Qwen3-Next-80B-A3B-Instruct": "chutes-qwen-qwen3-next-80b-a3b-instruct",
+            "google/gemma-4-31B-turbo-TEE": "chutes-google-gemma-4-31b-turbo-tee",
+            "deepseek-ai/DeepSeek-V3.2-TEE": "chutes-deepseek-ai-deepseek-v3-2-tee",
+        }
+        for model_id, expected in cases.items():
+            self.assertEqual(
+                derive_chute_slug(model_id),
+                expected,
+                f"slug mismatch for {model_id!r}",
+            )
+
+    def test_slug_squashes_double_dashes(self) -> None:
+        # Pathological model_id that yields a "--" pair before squashing.
+        self.assertEqual(
+            derive_chute_slug("foo./bar"),
+            "chutes-foo-bar",
+        )
+
+    def test_explicit_slug_overrides_derivation(self) -> None:
+        # If a chute owner registered a non-standard slug, ModelConfig.slug
+        # must win — we can't silently address the wrong hostname.
+        cfg_default = MODEL_REGISTRY["general"]
+        derived = derive_chute_slug(cfg_default.model_id)
+        self.assertEqual(cfg_default.chute_slug(), derived)
+
+
+class TestGeneralTextChain(unittest.TestCase):
+    """The frontend's chat-title generator now consumes this chain via
+    /v1/router/general_text_models, so the ordering and contents are part
+    of a public contract — pin them here so a registry edit can't silently
+    break sidebar titles."""
+
+    def test_chain_starts_with_kimi_k2_6_then_qwen3_6(self) -> None:
+        chain = get_general_text_chain()
+        ids = [c.model_id for c in chain]
+        # Primary first.
+        self.assertEqual(ids[0], "moonshotai/Kimi-K2.6-TEE")
+        # Qwen3.6-27B inserted at priority 3 sits one rung below — it uses a
+        # different upstream pool from the Moonshot/Kimi family, so it gives
+        # us a non-correlated next-hop during a Kimi-pool capacity event.
+        self.assertEqual(ids[1], "Qwen/Qwen3.6-27B-TEE")
+
+    def test_chain_is_deduped_and_bounded(self) -> None:
+        chain = get_general_text_chain()
+        ids = [c.model_id for c in chain]
+        self.assertEqual(len(ids), len(set(ids)), "chain has duplicate model_ids")
+        # 5-element fallback cap from get_fallback_models + primary = 6 max.
+        self.assertLessEqual(len(chain), 6)
+
+    def test_every_model_in_chain_supports_tools(self) -> None:
+        # set_chat_title is a tool call — a non-tool model would always
+        # return null and waste a chain slot.
+        for cfg in get_general_text_chain():
+            self.assertTrue(
+                cfg.supports_tools,
+                f"{cfg.model_id} is in the chain but doesn't support tools",
+            )
+
+
+class TestGeneralTextModelsEndpoint(unittest.TestCase):
+    """End-to-end test of the new public endpoint via FastAPI TestClient.
+    Verifies the response shape consumers (chutes-frontend) will rely on."""
+
+    def test_endpoint_returns_chain_with_slugs(self) -> None:
+        client = TestClient(app)
+        resp = client.get("/v1/router/general_text_models")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+
+        self.assertEqual(body["task_type"], "general_text")
+        self.assertIsInstance(body["models"], list)
+        self.assertGreater(len(body["models"]), 0)
+
+        first = body["models"][0]
+        # Required keys for the consumer.
+        for key in ("model_id", "slug", "display_name", "supports_tools", "timeout_seconds"):
+            self.assertIn(key, first)
+
+        # Sanity: every slug starts with `chutes-` (the public hostname pattern).
+        for entry in body["models"]:
+            self.assertTrue(
+                entry["slug"].startswith("chutes-"),
+                f"unexpected slug shape: {entry['slug']!r}",
+            )
+            self.assertTrue(entry["supports_tools"])
+
+    def test_endpoint_does_not_require_auth(self) -> None:
+        # Public — no Authorization header should be needed. The chain
+        # contents are already public on chutes.ai/models.
+        client = TestClient(app)
+        resp = client.get("/v1/router/general_text_models")
+        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

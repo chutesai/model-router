@@ -19,7 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .classifier import ClassificationResult, TaskClassifier
 from .metrics import metrics
-from .models import ModelConfig, TaskType, get_fallback_models, get_model_for_task
+from .models import (
+    ModelConfig,
+    TaskType,
+    get_fallback_models,
+    get_general_text_chain,
+    get_model_for_task,
+)
 
 app = FastAPI(title="Model Router", version="2.0.0")
 
@@ -628,6 +634,38 @@ async def list_models() -> dict:
 @app.get("/v1/router/metrics")
 async def get_metrics() -> dict:
     return metrics.to_dict()
+
+
+@app.get("/v1/router/general_text_models")
+async def get_general_text_models() -> dict:
+    """Public list of the general_text primary + fallback chain.
+
+    Consumed by the chutes-frontend chat-title generator (and any other
+    short-prompt tool-call task that needs a canonical, ordered, deduped
+    list of general-purpose chat models that all support tools). The
+    frontend addresses each chute *directly* via `https://{slug}.chutes.ai`
+    (no router hop / classifier latency for a 64-token title), so we
+    expose `slug` alongside `model_id` here.
+
+    No auth required — the endpoint reveals only registry contents (model
+    names + display labels), which are public information already visible
+    on chutes.ai/models. Cache-Control is short so consumers can recover
+    quickly when the registry is updated mid-incident.
+    """
+    chain = get_general_text_chain()
+    return {
+        "task_type": "general_text",
+        "models": [
+            {
+                "model_id": cfg.model_id,
+                "slug": cfg.chute_slug(),
+                "display_name": cfg.display_name,
+                "supports_tools": cfg.supports_tools,
+                "timeout_seconds": cfg.timeout_seconds,
+            }
+            for cfg in chain
+        ],
+    }
 
 
 # --- Anthropic Messages API Endpoint ---

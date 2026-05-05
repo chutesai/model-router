@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 
 # Default max_tokens for chat-completion entries when the inbound request
@@ -30,6 +31,22 @@ class TaskType(Enum):
     UNKNOWN = "unknown"
 
 
+def derive_chute_slug(model_id: str) -> str:
+    """Compute the public chute hostname slug from a model_id.
+
+    Chutes follows a consistent convention: `chutes-{lower(model_id)}` with
+    `/` and `.` replaced by `-` and any double-dashes squashed. Verified
+    against every model_id in the registry on 2026-05-05 — all hostnames
+    of the form `https://{slug}.chutes.ai/v1/...` resolve. Owners of the
+    chute set the slug on creation; if a future model uses a non-standard
+    one, override it explicitly via ModelConfig(slug=...).
+    """
+    cleaned = model_id.lower().replace("/", "-").replace(".", "-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return f"chutes-{cleaned.strip('-')}"
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a backend model."""
@@ -44,6 +61,14 @@ class ModelConfig:
     supports_vision: bool = False
     timeout_seconds: float = 120.0
     exclude_from_routing: bool = False
+    # The hostname slug under chutes.ai (e.g. `chutes-moonshotai-kimi-k2-6-tee`).
+    # When None, derive_chute_slug(model_id) is used. Set explicitly only when
+    # the chute owner registered a non-standard slug.
+    slug: Optional[str] = None
+
+    def chute_slug(self) -> str:
+        """The slug to address this model's chute directly (no router hop)."""
+        return self.slug if self.slug is not None else derive_chute_slug(self.model_id)
 
 
 MODEL_REGISTRY: dict[str, ModelConfig] = {
@@ -320,3 +345,20 @@ def get_fallback_models(
             result.append(config)
 
     return result[:5]
+
+
+def get_general_text_chain() -> list[ModelConfig]:
+    """The full primary → fallback chain for `general_text` tasks.
+
+    Used by the chutes-frontend chat-title generator (and any other client
+    that wants a canonical "small ordered list of general-purpose chat
+    models that all support tools"). Single source of truth — the alternative
+    is hardcoding a list in every consumer and watching it drift.
+
+    Returns primary first, then same-task fallbacks, then cross-task
+    fallbacks. Already deduped by model_id by `get_fallback_models`. The
+    result is bounded (currently ≤ 6 models) and cheap to recompute.
+    """
+    primary = get_model_for_task(TaskType.GENERAL_TEXT)
+    fallbacks = get_fallback_models(primary.model_id, TaskType.GENERAL_TEXT)
+    return [primary] + fallbacks
