@@ -526,5 +526,90 @@ class TestGeneralTextModelsEndpoint(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
+class TestAuthForwarding(unittest.TestCase):
+    """Auth path: service keys keep working AND end-user OAuth JWTs are
+    accepted and forwarded upstream so the chute bills the user, not us
+    (Florian 2026-05-07)."""
+
+    def test_jwt_detection(self) -> None:
+        from model_router import server as srv
+        # eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 = {"alg":"HS256","typ":"JWT"}
+        valid_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.signature"
+        self.assertTrue(srv._is_jwt_token(valid_jwt))
+
+        # Service API keys (cpk_…) and other opaque tokens are not JWTs.
+        self.assertFalse(srv._is_jwt_token("cpk_v1_abc123_def456"))
+        self.assertFalse(srv._is_jwt_token("a-random-string"))
+        # Two segments — not three.
+        self.assertFalse(srv._is_jwt_token("eyJhbGciOiJIUzI1NiJ9.payload"))
+        # Header doesn't decode to JSON with `alg`.
+        self.assertFalse(srv._is_jwt_token("not-base64.payload.sig"))
+
+    def test_service_key_clears_forwarded_token(self) -> None:
+        from model_router import server as srv
+
+        srv.api_key = "service-key-xyz"
+        try:
+            # Pre-set the contextvar to simulate previous-request leak.
+            srv._caller_upstream_token.set("leftover")
+            srv._require_router_auth(
+                x_api_key=None, authorization="Bearer service-key-xyz"
+            )
+            # Service-key path must clear the contextvar so upstream uses
+            # the module api_key.
+            self.assertIsNone(srv._caller_upstream_token.get())
+            self.assertEqual(srv._upstream_token(), "service-key-xyz")
+        finally:
+            srv.api_key = ""
+            srv._caller_upstream_token.set(None)
+
+    def test_jwt_sets_forwarded_token(self) -> None:
+        from model_router import server as srv
+
+        srv.api_key = "service-key-xyz"
+        try:
+            jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhYmMifQ.sig"
+            srv._require_router_auth(
+                x_api_key=None, authorization=f"Bearer {jwt}"
+            )
+            self.assertEqual(srv._caller_upstream_token.get(), jwt)
+            self.assertEqual(srv._upstream_token(), jwt)
+        finally:
+            srv.api_key = ""
+            srv._caller_upstream_token.set(None)
+
+    def test_garbage_token_rejected(self) -> None:
+        from fastapi import HTTPException
+        from model_router import server as srv
+
+        srv.api_key = "service-key-xyz"
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                srv._require_router_auth(
+                    x_api_key=None, authorization="Bearer not-a-key-not-a-jwt"
+                )
+            self.assertEqual(ctx.exception.status_code, 403)
+        finally:
+            srv.api_key = ""
+
+    def test_missing_auth_rejected(self) -> None:
+        from fastapi import HTTPException
+        from model_router import server as srv
+
+        with self.assertRaises(HTTPException) as ctx:
+            srv._require_router_auth(x_api_key=None, authorization=None)
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_upstream_token_falls_back_to_service_key(self) -> None:
+        from model_router import server as srv
+
+        srv.api_key = "fallback-service-key"
+        srv._caller_upstream_token.set(None)
+        try:
+            self.assertEqual(srv._upstream_token(), "fallback-service-key")
+        finally:
+            srv.api_key = ""
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 import httpx
 
@@ -111,11 +112,20 @@ class TaskClassifier:
         self,
         messages: list[dict],
         has_images: bool = False,
+        bearer_override: Optional[str] = None,
     ) -> ClassificationResult:
-        """Classify a request to determine task type."""
+        """Classify a request to determine task type.
+
+        `bearer_override` lets the caller forward an end-user OAuth
+        token so the classifier call is billed against the user instead
+        of the router's service account. Defaults to None → uses the
+        constructor-supplied service `api_key` (backward compat for
+        non-chat callers).
+        """
         if has_images:
             return ClassificationResult(TaskType.VISION, 1.0)
 
+        upstream_bearer = bearer_override or self.api_key
         user_content = self._extract_user_content(messages)
         has_system_prompt = self._has_nontrivial_system_message(messages)
 
@@ -127,7 +137,7 @@ class TaskClassifier:
                 response = await self.client.post(
                     f"{self.api_base}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {upstream_bearer}",
                         "Content-Type": "application/json",
                     },
                     json={

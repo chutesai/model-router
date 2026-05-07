@@ -5,10 +5,12 @@ Supports both OpenAI Chat Completions and Anthropic Messages API formats.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from typing import Any, AsyncIterator, Literal, Optional
 
 import httpx
@@ -52,6 +54,41 @@ classifier: Optional[TaskClassifier] = None
 api_key: str = ""
 api_base: str = ""
 
+# Per-request token to forward upstream. Set by `_require_router_auth`
+# whenever the caller authenticates with an end-user OAuth JWT (not the
+# router service key); read by every upstream chute call via
+# `_upstream_token()` so the chute can bill the user instead of us.
+# Falls back to the module `api_key` for service-keyed callers (the
+# original behaviour, kept for backward compat with non-chat clients).
+_caller_upstream_token: ContextVar[Optional[str]] = ContextVar(
+    "_caller_upstream_token", default=None
+)
+
+
+def _is_jwt_token(token: str) -> bool:
+    """Heuristic: looks like a chutes IDP JWT (three base64url parts,
+    header decodes to a JSON object with an "alg" field). Service API
+    keys (cpk_…) don't match this shape. Used to decide whether the
+    incoming bearer should be forwarded upstream verbatim."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        # JWT base64url, no padding — re-pad.
+        padded = parts[0] + "=" * (-len(parts[0]) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padded))
+        return isinstance(header, dict) and "alg" in header
+    except Exception:
+        return False
+
+
+def _upstream_token() -> str:
+    """Bearer token to use for upstream chute calls in the current
+    request context. Returns the per-request forwarded user token if
+    one was set by the auth dependency, else the module service key."""
+    forwarded = _caller_upstream_token.get()
+    return forwarded or api_key
+
 
 def ensure_router_ready() -> None:
     """Ensure router globals are initialized."""
@@ -87,7 +124,31 @@ def _require_router_auth(
     x_api_key: Optional[str],
     authorization: Optional[str],
 ) -> None:
-    """Prevent unauthenticated access to the router."""
+    """Authenticate the caller. Two acceptable credentials:
+
+      1. Service API keys configured on this router (ROUTER_API_KEY env
+         or the upstream CHUTES_API_KEY). These are pre-shared and are
+         what non-chat clients (the chutes-knowledge-agent, batch jobs,
+         direct curl users on the docs page) use. The router uses its
+         own service key when calling upstream — kept for backward
+         compat.
+
+      2. End-user OAuth JWTs minted by chutes_idp. We do NOT validate
+         the JWT signature here — we trust the upstream chute to
+         validate it on the forwarded call. If the chute rejects the
+         token, the caller sees the upstream's 401 surfaced in the
+         attempt trace. Forwarding the user's token means the chute
+         bills the request against the user's quota instead of ours,
+         which is the only correct behavior for the chutes-chat
+         frontend (Florian 2026-05-07: "we, chutes, pay for the whole
+         chat… users can consume it for free… we must make sure the
+         payment happens based on the user's own quota").
+
+    The active mode is recorded in the `_caller_upstream_token`
+    contextvar so all downstream HTTP calls can pick the right token
+    via `_upstream_token()` without threading a parameter through every
+    function.
+    """
     keys = {
         key
         for key in (
@@ -96,13 +157,27 @@ def _require_router_auth(
         )
         if key
     }
-    if not keys:
-        raise HTTPException(status_code=503, detail="No API key configured for model-router.")
     client_key = _extract_client_key(x_api_key=x_api_key, authorization=authorization)
     if not client_key:
         raise HTTPException(status_code=401, detail="Missing API key")
-    if client_key not in keys:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+    if client_key in keys:
+        # Service-key path: clear any previous per-request token so
+        # `_upstream_token()` returns the module service key.
+        _caller_upstream_token.set(None)
+        return
+    if _is_jwt_token(client_key):
+        # User OAuth path: forward this token to the upstream chute.
+        _caller_upstream_token.set(client_key)
+        return
+    if not keys:
+        # No service keys configured AND the caller didn't send a JWT —
+        # treat as misconfiguration so ops notices rather than silently
+        # accepting anything.
+        raise HTTPException(
+            status_code=503,
+            detail="No API key configured for model-router.",
+        )
+    raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 def _build_router_failure_payload(
@@ -702,7 +777,9 @@ async def anthropic_messages(
     if classifier is None:
         result = ClassificationResult(TaskType.GENERAL_TEXT, 0.5)
     else:
-        result = await classifier.classify(openai_messages, has_images)
+        result = await classifier.classify(
+            openai_messages, has_images, bearer_override=_caller_upstream_token.get()
+        )
 
     task_type = result.task_type
     classification_time_ms = (time.perf_counter() - start_time) * 1000
@@ -894,7 +971,7 @@ async def _anthropic_stream_response(
             response = await client.post(
                 f"{api_base}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {_upstream_token()}",
                     "Content-Type": "application/json",
                 },
                 json={**payload, "stream": False},
@@ -928,7 +1005,7 @@ async def _anthropic_stream_response(
                 "POST",
                 f"{api_base}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {_upstream_token()}",
                     "Content-Type": "application/json",
                 },
                 json={**payload, "stream": True},
@@ -1027,7 +1104,7 @@ async def _anthropic_non_stream_response(
         response = await client.post(
             f"{api_base}/chat/completions",
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {_upstream_token()}",
                 "Content-Type": "application/json",
             },
             json=payload,
@@ -1068,7 +1145,9 @@ async def chat_completions(
     if classifier is None:
         result = ClassificationResult(TaskType.GENERAL_TEXT, 0.5)
     else:
-        result = await classifier.classify(request.messages, has_images)
+        result = await classifier.classify(
+            request.messages, has_images, bearer_override=_caller_upstream_token.get()
+        )
 
     task_type = result.task_type
     classification_time_ms = (time.perf_counter() - start_time) * 1000
@@ -1208,7 +1287,7 @@ async def _stream_response(
         "POST",
         f"{api_base}/chat/completions",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {_upstream_token()}",
             "Content-Type": "application/json",
         },
         json=_build_payload(request, model_config, stream=True),
@@ -1314,7 +1393,7 @@ async def _non_stream_response(
         response = await client.post(
             f"{api_base}/chat/completions",
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {_upstream_token()}",
                 "Content-Type": "application/json",
             },
             json=_build_payload(request, model_config, stream=False),
