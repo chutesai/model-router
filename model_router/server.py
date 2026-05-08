@@ -124,30 +124,33 @@ def _require_router_auth(
     x_api_key: Optional[str],
     authorization: Optional[str],
 ) -> None:
-    """Authenticate the caller. Two acceptable credentials:
+    """Authenticate the caller and pick the upstream-billing identity.
 
-      1. Service API keys configured on this router (ROUTER_API_KEY env
-         or the upstream CHUTES_API_KEY). These are pre-shared and are
-         what non-chat clients (the chutes-knowledge-agent, batch jobs,
-         direct curl users on the docs page) use. The router uses its
-         own service key when calling upstream — kept for backward
-         compat.
+    Strategy: the router does NOT try to validate the caller's token
+    locally. It only distinguishes service keys (which we issued and
+    that target the router's own service-account quota) from
+    everything else (which we forward to upstream chutes verbatim and
+    let chutes/api.chutes.ai validate).
 
-      2. End-user OAuth JWTs minted by chutes_idp. We do NOT validate
-         the JWT signature here — we trust the upstream chute to
-         validate it on the forwarded call. If the chute rejects the
-         token, the caller sees the upstream's 401 surfaced in the
-         attempt trace. Forwarding the user's token means the chute
-         bills the request against the user's quota instead of ours,
-         which is the only correct behavior for the chutes-chat
-         frontend (Florian 2026-05-07: "we, chutes, pay for the whole
-         chat… users can consume it for free… we must make sure the
-         payment happens based on the user's own quota").
+      • Service API keys configured on this router (ROUTER_API_KEY env
+        or the upstream CHUTES_API_KEY). Match → use the module
+        `api_key` for upstream calls. Backward compat for non-chat
+        callers (chutes-knowledge-agent, batch jobs, docs-page curl).
+
+      • Anything else non-empty → forwarded to upstream as-is. Real
+        end-user OAuth tokens (JWTs from chutes_idp, opaque tokens
+        from any future flow) get accepted; the chute on the other
+        end validates and bills the user's quota. Bogus tokens get
+        a 401 from the chute, which we surface back through the
+        attempt trace. Florian 2026-05-07 #2: an earlier version
+        tried to detect JWTs by header shape and rejected anything
+        else; that locked out 18 real users in 24h whose session
+        tokens didn't match the heuristic. Trusting upstream is
+        simpler and correct.
 
     The active mode is recorded in the `_caller_upstream_token`
-    contextvar so all downstream HTTP calls can pick the right token
-    via `_upstream_token()` without threading a parameter through every
-    function.
+    contextvar so every downstream HTTP call can pick the right token
+    via `_upstream_token()` without threading a parameter through.
     """
     keys = {
         key
@@ -165,19 +168,8 @@ def _require_router_auth(
         # `_upstream_token()` returns the module service key.
         _caller_upstream_token.set(None)
         return
-    if _is_jwt_token(client_key):
-        # User OAuth path: forward this token to the upstream chute.
-        _caller_upstream_token.set(client_key)
-        return
-    if not keys:
-        # No service keys configured AND the caller didn't send a JWT —
-        # treat as misconfiguration so ops notices rather than silently
-        # accepting anything.
-        raise HTTPException(
-            status_code=503,
-            detail="No API key configured for model-router.",
-        )
-    raise HTTPException(status_code=403, detail="Invalid API key")
+    # Anything else: forward verbatim to upstream. The chute validates.
+    _caller_upstream_token.set(client_key)
 
 
 def _build_router_failure_payload(

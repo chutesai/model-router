@@ -578,19 +578,25 @@ class TestAuthForwarding(unittest.TestCase):
             srv.api_key = ""
             srv._caller_upstream_token.set(None)
 
-    def test_garbage_token_rejected(self) -> None:
-        from fastapi import HTTPException
+    def test_unknown_token_forwarded_to_upstream(self) -> None:
+        # Florian 2026-05-08: the previous JWT-shape check rejected real
+        # users whose tokens didn't match the heuristic. Now any non-empty
+        # bearer that isn't a service key is forwarded verbatim — chutes
+        # validates upstream and surfaces 401 for genuine garbage. This
+        # test pins the new behaviour: NOT rejected at the router.
         from model_router import server as srv
 
         srv.api_key = "service-key-xyz"
         try:
-            with self.assertRaises(HTTPException) as ctx:
-                srv._require_router_auth(
-                    x_api_key=None, authorization="Bearer not-a-key-not-a-jwt"
-                )
-            self.assertEqual(ctx.exception.status_code, 403)
+            srv._require_router_auth(
+                x_api_key=None, authorization="Bearer some-opaque-token"
+            )
+            # Forwarded to upstream as-is.
+            self.assertEqual(srv._caller_upstream_token.get(), "some-opaque-token")
+            self.assertEqual(srv._upstream_token(), "some-opaque-token")
         finally:
             srv.api_key = ""
+            srv._caller_upstream_token.set(None)
 
     def test_missing_auth_rejected(self) -> None:
         from fastapi import HTTPException
